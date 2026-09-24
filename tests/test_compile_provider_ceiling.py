@@ -66,7 +66,7 @@ def test_a_ceiling_that_is_not_positive_whole_seconds_is_refused(bad: object) ->
             pass
 
 
-def test_the_compile_ceiling_is_above_the_default_and_below_the_observed_pass() -> None:
+def test_the_compile_ceiling_is_above_the_default_and_bounded_for_luna_max() -> None:
     ceiling = compile_memory.COMPILE_PROVIDER_CEILING_S
     assert llm_client.DEFAULT_TIMEOUT_S < ceiling
-    assert ceiling < 600
+    assert ceiling <= 600

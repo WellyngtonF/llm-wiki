@@ -957,7 +957,7 @@ def _daily_entry_offsets(content: bytes) -> list[int]:
     return offsets
 
 
-def _daily_part_bounds(content: bytes) -> list[tuple[int, int]]:
+def _marker_part_bounds(content: bytes) -> list[tuple[int, int]]:
     """The byte ranges this day is compiled in, split only where an entry ends."""
     if len(content) <= MAX_DAILY_PART_BYTES:
         return [(0, len(content))]
@@ -969,6 +969,25 @@ def _daily_part_bounds(content: bytes) -> list[tuple[int, int]]:
             bounds.append((start, offsets[index - 1]))
             start = offsets[index - 1]
     bounds.append((start, len(content)))
+    return bounds
+
+
+def _daily_part_bounds(content: bytes) -> list[tuple[int, int]]:
+    """Keep existing parts stable; split oversized ones at capture headings."""
+    bounds: list[tuple[int, int]] = []
+    for start, end in _marker_part_bounds(content):
+        if end - start <= MAX_DAILY_PART_BYTES:
+            bounds.append((start, end))
+            continue
+        offsets = [start, *(match.start() for match in re.finditer(
+            rb"(?m)^## \[\d{2}:\d{2}:\d{2}\]", content, re.MULTILINE
+        ) if start < match.start() < end), end]
+        cursor = start
+        for index in range(1, len(offsets)):
+            if offsets[index] - cursor > MAX_DAILY_PART_BYTES and offsets[index - 1] > cursor:
+                bounds.append((cursor, offsets[index - 1]))
+                cursor = offsets[index - 1]
+        bounds.append((cursor, end))
     return bounds
 
 
@@ -1048,7 +1067,12 @@ def compile_part_slice(content: bytes, digest: str) -> bytes | None:
     present verbatim and in place, which is the append-only argument a
     transparency log makes with a consistency proof (RFC 6962).
     """
-    for start, _end in _daily_part_bounds(content):
+    # Historical citations may name a marker-based part that is now split at
+    # capture headings. Both layouts still require an exact historical hash.
+    starts = sorted({start for start, _end in (
+        *_marker_part_bounds(content), *_daily_part_bounds(content)
+    )})
+    for start in starts:
         found = _slice_from(content, start, digest)
         if found is not None:
             return found
@@ -1241,6 +1265,11 @@ def _require_reference_prefix(line: str, start: int) -> None:
 
 def _reference_candidate(line: str, start: int) -> tuple[str, int]:
     """A backtick-quoted reference ends at its closing backtick, not at the line."""
+    if start > 0 and line[start - 1] == '"':
+        candidate, length = json.JSONDecoder().raw_decode(line[start - 1:])
+        if not isinstance(candidate, str):
+            raise ValueError("evidence reference must be a JSON string")
+        return candidate, start - 1 + length
     if start == 0 or line[start - 1] != "`":
         return line[start:].strip(), len(line)
     end = line.find("`", start)

@@ -38,6 +38,22 @@ import process_liveness
 from reliable_memory import durable_publish_file, fsync_directory, sha256_bytes
 
 
+def windows_background_options() -> dict[str, Any]:
+    """Hide a console from creation and let descendants inherit it.
+
+    DETACHED_PROCESS makes CREATE_NO_WINDOW ineffective. Even a genuinely
+    consoleless parent lets an ordinary console child allocate a visible
+    window (including the Windows venv redirector's interpreter). A hidden
+    console avoids that across the whole inherited process tree.
+    """
+    if sys.platform != "win32":
+        return {}
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = subprocess.SW_HIDE
+    return {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
+
+
 def _resolve_vault_root(start: Path) -> Path:
     """Resolve the canonical vault root even from inside a git worktree.
 
@@ -52,6 +68,7 @@ def _resolve_vault_root(start: Path) -> Path:
             cwd=str(start),
             text=True,
             stderr=subprocess.DEVNULL,
+            **windows_background_options(),
         ).strip()
         git_common_dir = Path(out) if Path(out).is_absolute() else (start / out).resolve()
         git_common_dir = git_common_dir.resolve()
@@ -652,12 +669,7 @@ def _stream_target(path: Path | None):
 def _detached_flags() -> dict[str, Any]:
     if sys.platform != "win32":
         return {"start_new_session": True}
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    CREATE_NO_WINDOW = 0x08000000
-    return {
-        "creationflags": DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-    }
+    return windows_background_options()
 
 
 def _detached_environment() -> dict[str, str]:
@@ -690,7 +702,7 @@ def spawn_detached(
     """Spawn a subprocess that outlives the caller.
 
     Used by hook wrappers to kick off flush/compile without blocking the
-    hook timeout. Safe on Windows (DETACHED_PROCESS) and POSIX
+    hook timeout. Uses an inherited hidden console on Windows and POSIX
     (start_new_session).
 
     If `stdout_path` / `stderr_path` are given, stdout/stderr are redirected

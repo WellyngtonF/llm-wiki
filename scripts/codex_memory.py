@@ -36,7 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from memory_state import ROOT, STATE_ROOT, update_state  # noqa: E402
+from memory_state import ROOT, STATE_ROOT, update_state, windows_background_options  # noqa: E402
 
 SCRIPTS_DIR = ROOT / "scripts"
 # A hook must not wait on a contended state file; without the lock the turn is captured.
@@ -202,6 +202,7 @@ def _run_script(name: str, project_dir: Path, stdin_text: str = "") -> subproces
             errors="replace",
             check=False,
             timeout=SCRIPT_TIMEOUT_SECONDS,
+            **windows_background_options(),
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess([sys.executable, str(script)], 124, "", "")

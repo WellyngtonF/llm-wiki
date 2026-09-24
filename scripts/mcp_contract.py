@@ -183,14 +183,18 @@ def _freshness(components: dict[str, dict[str, Any]]) -> str:
 
 @lru_cache(maxsize=8)
 def _source_commit(root: str) -> str | None:
+    from memory_state import windows_background_options
+
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=root,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=1,
             check=False,
+            **windows_background_options(),
         )
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         return None

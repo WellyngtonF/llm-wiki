@@ -1965,8 +1965,12 @@ def _count_queue_ownership(
 ) -> None:
     if "queue_ownership" not in tables:
         return
+    columns = {row[1] for row in database.execute("PRAGMA table_info(queue_ownership)")}
+    projection = "*"
+    if {"owner_token", "domain_role", "process_id"} <= columns:
+        projection = "owner_token AS token, domain_role AS role, process_id AS pid, expires_at"
     rows = database.execute(
-        "SELECT * FROM queue_ownership LIMIT ?", (MAX_OPERATIONAL_ROWS + 1,)
+        f"SELECT {projection} FROM queue_ownership LIMIT ?", (MAX_OPERATIONAL_ROWS + 1,)
     ).fetchall()
     if len(rows) > MAX_OPERATIONAL_ROWS:
         details["deletion_codes"].append("queue_owner_state_unknown")

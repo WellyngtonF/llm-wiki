@@ -21,7 +21,14 @@ from typing import Any
 
 from event_envelope import EventEnvelope, build_event_envelope
 from maybe_compile import spawn_compile_if_idle
-from memory_state import MAX_CAPTURE_INTENT_BYTES, ROOT, STATE_ROOT, spawn_detached, update_state
+from memory_state import (
+    MAX_CAPTURE_INTENT_BYTES,
+    ROOT,
+    STATE_ROOT,
+    spawn_detached,
+    update_state,
+    windows_background_options,
+)
 from project_journal import (
     SESSION_START_RECOVERY_SECONDS,
     CheckpointDecision,
@@ -499,6 +506,7 @@ def _run_delegate(
         errors="replace",
         check=False,
         timeout=DELEGATE_TIMEOUT_SECONDS,
+        **windows_background_options(),
     )
     _forward_delegate_stdout(result, forward_stdout)
     return result

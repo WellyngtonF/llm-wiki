@@ -11,6 +11,8 @@ from llm_client import LLMResult, ProviderDescriptor
 from markdown_transaction import MarkdownCoordinator, TransactionFailure
 from reliable_memory import canonical_json_bytes, sha256_bytes
 
+from tests.slow_machine import SHORT_TIMEOUT
+
 
 @pytest.fixture
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
@@ -319,6 +321,30 @@ def test_resolve_requires_coordinator_and_checks_persisted_gate_before_probe(
             compile_memory.resolve_compile_plan(
                 inputs, CompileCache(state_root), coordinator=observer
             )
+
+
+def test_compile_waits_for_a_brief_concurrent_writer(vault):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import compile_memory
+
+    root, state_root = vault
+    owner = MarkdownCoordinator(root, state_root)
+    observer = MarkdownCoordinator(root, state_root)
+    acquired = threading.Event()
+
+    def write():
+        with owner.writer_gate():
+            acquired.set()
+            time.sleep(0.15)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(write)
+        assert acquired.wait(SHORT_TIMEOUT)
+        compile_memory._assert_external_work_allowed(observer)
+        future.result(timeout=SHORT_TIMEOUT)
 
 
 def test_critique_failure_lineage_records_stage_provider_and_stable_code(

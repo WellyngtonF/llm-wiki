@@ -675,6 +675,7 @@ class TestHelperFunctions:
         changed = daily / "2026-07-13.md"
         unchanged.write_text("same", encoding="utf-8")
         changed.write_text("new", encoding="utf-8")
+        (daily / "README.md").write_text("Daily directory documentation", encoding="utf-8")
         monkeypatch.setattr(memory_state, "ROOT", tmp_path)
         monkeypatch.setattr(
             memory_state,

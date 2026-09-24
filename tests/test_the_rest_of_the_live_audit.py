@@ -193,7 +193,7 @@ def test_consolidation_gives_its_provider_the_compile_ceiling(monkeypatch) -> No
 
     monkeypatch.setattr(llm_client, "call_llm", fake_call)
 
-    assert (episode_consolidation._call_provider("records"), seen) == ("ok", [300])
+    assert (episode_consolidation._call_provider("records"), seen) == ("ok", [episode_consolidation.CONSOLIDATION_PROVIDER_CEILING_S])
 
 
 # ---------------------------------------------------------------- D2 ----

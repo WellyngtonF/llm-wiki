@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -725,6 +726,12 @@ def test_quarantined_compile_publishes_only_idempotent_candidates_and_stays_pend
         [daily],
     )
 
+    # Another session can add a note before this pending batch is retried.
+    # The already committed candidate must remain idempotent even though the
+    # claim-tree precondition for a NEW publication would now be different.
+    (root / "knowledge/notes/unrelated.md").write_text(
+        "---\ntype: concept\n---\n# Unrelated\nA separate project.\n", encoding="utf-8"
+    )
     retried = compile_memory.apply_compile_plan(
         inputs,
         plan,
@@ -1310,7 +1317,7 @@ def test_resolver_uses_exact_snapshot_for_draft_and_cited_critique_and_caches(
     exact = inputs.dailies[0].content.decode("utf-8")
     assert (
         len(calls),
-        exact in calls[0][1],
+        exact in re.sub(r"(?m)^\[@E\d+\] ", "", calls[0][1]),
         exact in calls[1][1],
         "A durable exact-byte observation." in calls[1][1],
         "A second durable exact-byte observation." in calls[1][1],

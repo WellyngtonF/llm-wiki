@@ -13,11 +13,35 @@ def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def test_extract_claim_ledger_json_reference():
+    from evidence_resolver import extract_evidence_references
+
+    reference = "daily:2026-09-11 sha256:" + "a" * 64 + " block:03:00:06 bytes:190-379"
+    content = json.dumps({"claims": [{"evidence": {"reference": reference, "text": "Decision"}}]})
+    assert [str(ref) for ref in extract_evidence_references(content)] == [reference]
+
+
 def _reference(daily_id: str, source: bytes, block: str, start: int, end: int) -> str:
     return (
         f"daily:{daily_id} sha256:{_sha(source)} block:{block} "
         f"bytes:{start}-{end}"
     )
+
+
+def test_codex_capture_evidence_survives_header_only_append(tmp_path):
+    from evidence_resolver import EvidenceResolutionError, EvidenceResolver
+
+    source = b"\n## [10:00:00] session-end | codex\n\nKeep the exact decision.\n"
+    quote = b"Keep the exact decision."
+    start = source.index(quote)
+    reference = _reference("2026-09-15", source, "10:00:00", start, start + len(quote))
+    path = tmp_path / "knowledge/daily/2026-09-15.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(source + b"\n## [11:00:00] session-end | codex\nAnother turn.\n")
+    assert EvidenceResolver(tmp_path).resolve(reference).bytes == quote
+    path.write_bytes(path.read_bytes().replace(quote, b"Changed the decision."))
+    with pytest.raises(EvidenceResolutionError):
+        EvidenceResolver(tmp_path).resolve(reference)
 
 
 def _write_bag(root: Path, daily_id: str, source: bytes, *, suffix: str = "one") -> Path:

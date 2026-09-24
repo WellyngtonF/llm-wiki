@@ -57,6 +57,7 @@ from types import MappingProxyType
 from typing import NamedTuple
 
 from context_budget import TokenCount, TokenCounter, TokenUsage, count_tokens
+from memory_state import windows_background_options
 from model_dlp import (
     DLPContentBlocked,
     DLPPolicyError,
@@ -1422,7 +1423,10 @@ def _run_cli(
     from sync_memory import _run_process_tree
 
     return _run_process_tree(
-        command, timeout=_timeout_s(), input=stdin_text, **options
+        command,
+        timeout=_timeout_s(),
+        input=stdin_text,
+        **{**windows_background_options(), **options},
     )
 
 

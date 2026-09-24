@@ -144,12 +144,33 @@ def _entry_role(entry: Mapping[str, object]) -> str:
 
 
 def _rendered_entry(entry: Mapping[str, object]) -> list[str]:
+    if entry.get("type") == "response_item":
+        return _rendered_codex_message(entry.get("payload"))
     role = _entry_role(entry)
     if not role:
         return []
     blocks = _content_blocks(entry.get("message"))
     lines = [_rendered_block(block, role) for block in blocks]
     return [line for line in lines if line]
+
+
+def _rendered_codex_message(payload: object) -> list[str]:
+    """Read Codex's canonical messages; event_msg repeats the same dialogue."""
+    if not isinstance(payload, Mapping) or payload.get("type") != "message":
+        return []
+    role = payload.get("role")
+    if role not in {"user", "assistant"} or payload.get("channel") == "analysis":
+        return []
+    lines = []
+    for block in _content_blocks(payload):
+        if not isinstance(block, Mapping):
+            continue
+        if block.get("type") not in {"input_text", "output_text", "text"}:
+            continue
+        line = _rendered_text(block, str(role))
+        if line:
+            lines.append(line)
+    return lines
 
 
 def _decoded_entry(line: str) -> Mapping[str, object] | None:

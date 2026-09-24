@@ -58,6 +58,31 @@ def test_the_tool_output_is_not_kept() -> None:
     assert "noise" not in rendered
 
 
+def test_codex_capture_preserves_dialogue_without_duplicate_events() -> None:
+    from flush_memory import _capture_prompt
+
+    entries = [
+        {"type": "session_meta", "payload": {"base_instructions": "system noise"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "Use a 23-minute cache."}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "Use a 23-minute cache."}]}},
+        {"type": "response_item", "payload": {"type": "reasoning", "encrypted_content": "hidden reasoning"}},
+        {"type": "response_item", "payload": {"type": "function_call_output", "output": "tool noise"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "This covers the 20-minute refresh."}]}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "This covers the 20-minute refresh."}},
+    ]
+    transcript = "\n".join(json.dumps(entry) for entry in entries)
+    record = {"event": "session_end", "evidence": [{"parts": [{"text": transcript}]}]}
+    prompt = _capture_prompt(record)
+    document = session_evidence.render_session_document({"session": "codex"}, transcript)
+    for text in (prompt, document):
+        assert text.count("**user:** Use a 23-minute cache.") == 1
+        assert text.count("**assistant:** This covers the 20-minute refresh.") == 1
+        assert "noise" not in text
+        assert "hidden reasoning" not in text
+
+
 def test_a_transcript_that_is_not_jsonl_is_kept_verbatim() -> None:
     rendered = session_evidence.render_transcript("plain notes\nsecond line")
 

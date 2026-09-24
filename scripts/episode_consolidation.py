@@ -448,7 +448,8 @@ def _already_consolidated(vault: Path, state: dict, day: str) -> bool:
 # Under the client's 90 s default the catch-up pass of 2026-09-23 stopped the
 # provider mid-answer on one day's records and the whole night counted as
 # failed. See `docs/research/2026-09-23-the-rest-of-the-live-audit.md`.
-CONSOLIDATION_PROVIDER_CEILING_S = 300
+# On this machine 300 s also stopped Luna Max mid-synthesis; 600 s completed.
+CONSOLIDATION_PROVIDER_CEILING_S = 600
 
 
 def _call_provider(prompt: str) -> str | None:
