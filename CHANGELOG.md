@@ -162,6 +162,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Codex hooks run on Windows.** Codex runs `commandWindows` as
+  `powershell.exe -NoProfile -Command "…"` (codex-cli 0.156.1), and PowerShell
+  does not expand `%LLM_WIKI_ROOT%`: every Codex hook failed with "file not
+  found" and its capture was lost. The template now reads `$env:LLM_WIKI_ROOT`.
 - **The Claude settings fragment owns every environment key it writes.**
   `claude_settings_resource` wrote the whole provider environment but read the
   fragment back through four keys, so with `MEMORY_CODEX_MODEL` or
