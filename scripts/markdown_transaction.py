@@ -4319,6 +4319,7 @@ def _append_until_committed(
     deadline: float,
     cancelled: Callable[[], bool] | None,
     stall_seconds: float = _APPEND_STALL_SECONDS,
+    require_live: Callable[[], None] = lambda: None,
 ) -> TransactionRecord:
     attempt = 0
     parent: str | None = None
@@ -4328,6 +4329,7 @@ def _append_until_committed(
         # caller's deadline and an attempt that never settles.
         coordinator._require_operation_active(deadline, cancelled)
         stall.require_moving()
+        require_live()
         candidate_id = _append_candidate_id(operation_id, attempt)
         outcome = _run_append_candidate(
             coordinator,
@@ -4392,6 +4394,25 @@ def _capture_append_context_matches(
     )
 
 
+def _require_capture_still_fenced(
+    coordinator: MarkdownCoordinator, expected: Mapping[str, object]
+) -> None:
+    """Stop the append the moment its fence is gone, instead of spending ids.
+
+    A lapsed fence fails every attempt's precondition the same way a lost
+    compare-and-swap does, and each failure spends one of the 64 deterministic
+    candidate ids. On 2026-09-23 a fence expired half a second into the append:
+    all 64 were quarantined, and every later retry of the task found them spent
+    and died in four seconds. Raised as `intent_fence_lost`, the worker defers
+    and retries under a fresh fence.
+    """
+    with coordinator._connect() as database:
+        try:
+            coordinator._check_capture_preconditions(database, expected)
+        except TransactionFailure as exc:
+            raise RuntimeError("intent_fence_lost") from exc
+
+
 def append_captured_knowledge(
     coordinator: MarkdownCoordinator,
     owner: object,
@@ -4424,6 +4445,7 @@ def append_captured_knowledge(
             content_guard="model_output",
             deadline=deadline,
             cancelled=cancelled,
+            require_live=lambda: _require_capture_still_fenced(coordinator, expected),
         )
     if not _capture_append_context_matches(record.preconditions, expected):
         raise ValueError("capture append transaction preconditions conflict")

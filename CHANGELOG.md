@@ -162,6 +162,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A capture append whose fence lapsed stops instead of spending its ids.**
+  `append_captured_knowledge` checks its intent fence before every attempt and
+  raises `intent_fence_lost`, which the worker defers and retries under a fresh
+  fence. Before, a lapsed fence failed each attempt's precondition like a lost
+  compare-and-swap: on 2026-09-23 one fence expired half a second into its append,
+  all 64 deterministic candidate ids were quarantined, every later retry found
+  them spent, and the capture was lost.
+- **A refusal before the plan existed is not "a state this runtime does not
+  define".** `apply` quarantines on `precondition_failed` whatever the row's
+  state, so a project lease that expires while a transaction is still
+  `preparing` leaves a quarantined row with an empty plan hash and no operation.
+  Doctor now accepts exactly that shape; one such row kept the live vault's
+  transactions check at `error` since 2026-09-22.
 - **The adoption gate names its cause and the queue waits out a busy
   database.** `reliability_v3_record_invalid` now carries what the validation
   saw (`code: Cause: message`), and the adopted queue validates adoption

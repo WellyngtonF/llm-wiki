@@ -843,11 +843,36 @@ def _transaction_row_corrupt(
     appears to own no operations may simply own operations nobody looked at.
     An incomplete read abstains instead of accusing.
     """
+    if _quarantined_before_planning(row, state, operation_positions):
+        return not _valid_unplanned_row(row)
     if not _valid_transaction_row(row, state):
         return True
     if operation_positions is None:
         return False
     return _operation_shape_corrupt(row, state, operation_positions)
+
+
+def _quarantined_before_planning(
+    row: sqlite3.Row, state: str, operation_positions: dict[str, list[int]] | None
+) -> bool:
+    """A refusal that arrived while the row was still `preparing`.
+
+    `apply` quarantines on `precondition_failed` whatever the row's state, so a
+    project lease that expired before the plan existed leaves a quarantined row
+    with the insert's empty plan hash and no operation. Seen on the installed
+    vault on 2026-09-22: the lease expired 0.1 s before the refusal.
+    """
+    if state != "quarantined" or row["plan_hash"] != "":
+        return False
+    return operation_positions is None or not operation_positions.get(row["id"])
+
+
+def _valid_unplanned_row(row: sqlite3.Row) -> bool:
+    return (
+        _valid_transaction_identity(row)
+        and isinstance(_loaded_preconditions(row), dict)
+        and _valid_transaction_timestamps(row)
+    )
 
 
 def _committed_within_undo_window(
