@@ -383,7 +383,6 @@ class _HookFamily(NamedTuple):
     env_keys: tuple[str, ...] = ()
 
 
-CLAUDE_ENV_KEYS = ("LLM_WIKI_ROOT", "LLM_WIKI_STATE_ROOT", "MEMORY_LLM_PROVIDER", "MEMORY_CLAUDE_MODEL")
 # Everything that shapes a provider call at install time, persisted wherever the
 # code runs unattended: the hooks' env block and the scheduler units. Issue #22:
 # an install run with MEMORY_LLM_PROVIDER=claude left the nightly unit to
@@ -406,6 +405,12 @@ PROVIDER_ENV_KEYS = (
     "MEMORY_LLM_BASE_URL",
     "OLLAMA_NO_CLOUD",
 )
+# Claude's env block owns every key the install writes into it. Owning only four
+# while `claude_settings_resource` wrote the whole provider environment made the
+# written fragment unreadable as itself whenever `MEMORY_CODEX_MODEL` or
+# `MEMORY_CODEX_REASONING` was set: the install failed its own verification, the
+# rollback saw drift, and the install was quarantined (live vault, 2026-09-24).
+CLAUDE_ENV_KEYS = ("LLM_WIKI_ROOT", "LLM_WIKI_STATE_ROOT", *PROVIDER_ENV_KEYS)
 
 
 # The test provider is never persisted: it exists so a suite can run without

@@ -162,6 +162,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The Claude settings fragment owns every environment key it writes.**
+  `claude_settings_resource` wrote the whole provider environment but read the
+  fragment back through four keys, so with `MEMORY_CODEX_MODEL` or
+  `MEMORY_CODEX_REASONING` set an install failed its own verification, the
+  rollback saw drift, and the install was quarantined. `CLAUDE_ENV_KEYS` now
+  covers `PROVIDER_ENV_KEYS`.
 - **A capture append whose fence lapsed stops instead of spending its ids.**
   `append_captured_knowledge` checks its intent fence before every attempt and
   raises `intent_fence_lost`, which the worker defers and retries under a fresh
