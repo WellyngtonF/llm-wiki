@@ -534,7 +534,7 @@ def _handoff_sections(
     project: ProjectProjection, max_actions: int
 ) -> list[tuple[str, str, str, bool]]:
     sections: list[tuple[str, str, str, bool]] = [
-        ("title", f"# Project handoff: {project.label or project.project}", "handoff", True)
+        ("title", f"# Work state: {project.label or project.project}", "handoff", True)
     ]
     named = (
         ("Active goal", list(project.goal.items())[-1:], "handoff"),

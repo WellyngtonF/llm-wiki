@@ -26,7 +26,7 @@ from pathlib import Path
 from project_journal import JOURNAL_HEADER, ProjectStore, recorded_journal_key
 from project_map import ProjectMap, ProjectMapError, read_project_map, repository_key
 from session_start_project_state import (
-    NotAProject,
+    NotARepository,
     repository_folder,
     working_repository,
 )
@@ -38,7 +38,7 @@ MAX_KEY_INCARNATIONS = 99
 MAX_FIRST_EVENT_BYTES = 256 * 1024
 
 
-class Unregistered(NotAProject):
+class Unregistered(NotARepository):
     """The directory's repository belongs to no registered project."""
 
 
@@ -82,8 +82,8 @@ def placement_of(
 ) -> Placement:
     """The place of the registered repository an agent works in.
 
-    Raises `NotAProject` for the vault, temporary directories and the home
-    directory, and `Unregistered` (also a `NotAProject`) for any other directory
+    Raises `NotARepository` for the vault, temporary directories and the home
+    directory, and `Unregistered` (also a `NotARepository`) for any other directory
     whose repository the project map does not list.
     """
     repository = working_repository(Path(directory), projects_dir(vault))

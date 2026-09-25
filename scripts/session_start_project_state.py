@@ -177,7 +177,7 @@ def _sanitize(text: str) -> str:
     return portable_slug(s)
 
 
-class NotAProject(ValueError):
+class NotARepository(ValueError):
     """The directory is not one the owner could be working in.
 
     A `ValueError`, so every caller that already catches one keeps its
@@ -224,7 +224,7 @@ def _require_project_candidate(project_dir: Path, projects_dir: Path) -> None:
     )
     for refused, message in refusals:
         if refused:
-            raise NotAProject(message)
+            raise NotARepository(message)
 
 
 def _base_slug(project_dir: Path) -> str:
@@ -353,7 +353,7 @@ def working_repository(directory: Path, projects_dir: Path) -> Path:
     """The main checkout of the repository an agent is working in.
 
     A subfolder or a worktree resolves to its main checkout (ADR 0002). Raises
-    `NotAProject` when the repository is the vault, inside it, a temporary
+    `NotARepository` when the repository is the vault, inside it, a temporary
     directory or the home directory. Whether it belongs to a project is the
     project map's answer, not this one (`work_state.placement_of`).
     """
@@ -628,7 +628,7 @@ def _build_context(state_path: Path, label: str, is_new: bool) -> str:
         return f"(project state at `{state_path}` unreadable: {type(e).__name__})"
 
     header = (
-        f"# Per-project state — `{label}`\n"
+        f"# Work state — `{label}`\n"
         f"\n"
         f"(Auto-injected from `knowledge/projects/{label}/state.md`"
         + (" — freshly created for this project." if is_new else ".")
@@ -664,7 +664,7 @@ def _run_session_start() -> int:
 
     try:
         placement = placement_of(vault, _resolve_project_dir())
-    except NotAProject:
+    except NotARepository:
         return _emit_empty()
     return _emit_project_context(vault, placement)
 

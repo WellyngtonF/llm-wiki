@@ -7,7 +7,7 @@ runtime reclaim, the deferred memory queue, yesterday's session
 consolidation; the compile (spawned through `maybe_compile`, followed until
 it finishes or the wait bound passes) and user-turn keying; then the steps
 that read the compile's output — the note index and project pages,
-orphaned-checkpoint clearing, structural lint, the FTS5 index,
+orphaned-checkpoint clearing, structural lint,
 registered-repository refresh, generation pruning, model weights, the bounded generation refresh —
 telemetry compaction, the health report, report pruning and the bounded
 fast-forward of the checkout. Never requires user interaction. All output

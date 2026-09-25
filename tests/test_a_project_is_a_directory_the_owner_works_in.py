@@ -46,7 +46,7 @@ def test_a_directory_inside_the_vault_is_not_a_project(tmp_path: Path, relative:
     inside = vault / relative
     inside.mkdir(parents=True, exist_ok=True)
 
-    with pytest.raises(project_state.NotAProject, match=message):
+    with pytest.raises(project_state.NotARepository, match=message):
         project_state.working_repository(inside, vault / "knowledge" / "projects")
 
 
@@ -58,7 +58,7 @@ def test_a_direct_child_of_the_platform_temp_directory_is_not_a_project(tmp_path
     provider.mkdir(parents=True)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_temp))
 
-    with pytest.raises(project_state.NotAProject, match="temporary directory"):
+    with pytest.raises(project_state.NotARepository, match="temporary directory"):
         project_state.working_repository(provider, vault / "knowledge" / "projects")
 
 
@@ -79,12 +79,12 @@ def test_the_home_directory_is_not_a_project(tmp_path: Path, monkeypatch) -> Non
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
-    with pytest.raises(project_state.NotAProject, match="home directory"):
+    with pytest.raises(project_state.NotARepository, match="home directory"):
         project_state.working_repository(home, vault / "knowledge" / "projects")
 
 
 def test_the_refusal_is_a_value_error_every_caller_already_catches() -> None:
-    assert issubclass(project_state.NotAProject, ValueError)
+    assert issubclass(project_state.NotARepository, ValueError)
 
 
 def test_the_corpus_holds_the_claim_pages_and_not_the_journal(tmp_path: Path) -> None:

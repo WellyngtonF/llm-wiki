@@ -491,14 +491,14 @@ def resolve_repository(vault: Path, directory: object) -> Path:
     A subfolder or a worktree names the same repository as its main checkout; a
     directory in no git repository, the vault, or the home directory names none.
     """
-    from session_start_project_state import NotAProject, working_repository
+    from session_start_project_state import NotARepository, working_repository
 
     path = _absolute_directory(directory)
     if not path.is_dir():
         raise ProjectMapError("directory_not_found", "directory does not exist")
     try:
         repository = working_repository(path.resolve(), Path(vault) / "knowledge" / "projects")
-    except NotAProject as error:
+    except NotARepository as error:
         raise ProjectMapError("not_a_repository", str(error)) from error
     if not (repository / ".git").exists():
         raise ProjectMapError(

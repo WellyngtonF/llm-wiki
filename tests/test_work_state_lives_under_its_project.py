@@ -261,7 +261,7 @@ def test_session_start_hands_off_the_work_state_it_finds_under_the_project(
 
     context = _session_start(checkout / "src")
 
-    assert "Project handoff: product-a/backend" in context
+    assert "# Work state: product-a/backend" in context
     assert "Bash failed: npm test" in context
 
 
@@ -307,7 +307,7 @@ def test_a_folder_from_before_the_project_layout_is_left_alone(vault, tmp_path) 
 
     assert (legacy / "journal.md").read_text(encoding="utf-8") == "not a journal\n"
     assert _journals(vault) == ["backend/backend/journal.md", "backend/journal.md"]
-    assert "Project handoff: backend/backend" in context
+    assert "# Work state: backend/backend" in context
 
 
 # --- the registration tool keeps the folders in step --------------------------------
