@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Readable memory** (spec `docs/specs/2026-09-24-readable-memory.md`, ADRs
+  0001–0003, glossary `CONTEXT.md`). Registered projects: the owner registers a
+  project by asking an agent, through the new 13th MCP tool `manage_project`; the
+  private project map lives at `knowledge/projects/project-map.md`; a repository is
+  identified by its main checkout, so subfolders and worktrees no longer create
+  projects, and unregistered work creates nothing under `knowledge/projects/`.
+  Work state lives at `knowledge/projects/<project>/<repository>/`, and generated
+  project pages (`<project>/index.md`, `general/index.md`) list each project's live
+  notes by type. New notes carry `project:` from the session's repository and
+  module `tags:`; `scripts/migrate_projects.py` moves an existing vault over, and
+  `scripts/migrate_links.py` rewrites old path-style links. An Obsidian CSS snippet
+  collapses the claims ledger.
+- **A compile that sees the vault.** The draft and critique receive a catalog of
+  every live note, the full text of the most similar notes (when vectors exist),
+  the durability rules as trusted instructions, and may answer `duplicate_of`.
+  Proposed links are kept only when they name a note that exists. Bodies that paste
+  a whole page are rejected. `MEMORY_COMPILE_CONTEXT_TOKENS` sets the compile's
+  context window; piece sizes follow it, and an oversized piece is deferred instead
+  of stopping the run.
+
+### Changed
+
+- Links are bare `[[slug]]`, resolved from the vault root as Obsidian does; no
+  backlink lines are written and the `missing_backlinks` lint check is retired.
+- The nightly reports an optional feature whose library is absent as skipped, not
+  failed. Doctor no longer counts dropped tool breadcrumbs or deferred compile
+  pieces as lost captures, reports an unverifiable optional Pyright as
+  informational, and stops asking for a generation refresh the refresh would not do.
+- Failure events open work-state blockers, empty turns append no checkpoint, and
+  checkpoints record the branch. Weekly consolidation keeps exactly one claims
+  ledger.
+
 ### Removed
 
 - **Legacy that nothing reads.** The pre-telemetry `cache/access_log.jsonl`
