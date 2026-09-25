@@ -30,7 +30,7 @@ import integration_hook_config as _hook_config
 import process_liveness
 import reliable_memory
 from bounded_io import read_stable_bytes
-from evidence_resolver import _daily_part_bounds
+from evidence_resolver import daily_pieces_compiled
 from install_control import validate_install_state
 from reliable_memory import (
     open_readonly_operational_db,
@@ -1475,10 +1475,8 @@ class _CompiledDaySupersession:
 
     def _day_compiled(self, logical_path: str, committed_creates: set[str]) -> bool:
         content = read_stable_bytes(self.vault_root / logical_path, _MAX_DAY_BYTES, label="daily source")
-        bounds = _daily_part_bounds(content)
-        return bool(bounds) and all(
-            _part_receipt_path(logical_path, content[start:end]) in committed_creates
-            for start, end in bounds
+        return daily_pieces_compiled(
+            content, lambda piece: _part_receipt_path(logical_path, piece) in committed_creates
         )
 
 

@@ -75,8 +75,12 @@ from evidence_resolver import (  # noqa: E402
     MAX_DAILY_PART_BYTES,  # noqa: F401 - re-exported: callers read the writer's bound here
     EvidenceRef,
     EvidenceResolver,
-    _daily_part_bounds,
+    _daily_part_bounds,  # noqa: F401 - re-exported: the top rung of the piece tree
     daily_entries,
+    daily_piece_tree,
+    daily_pieces_compiled,
+    pending_daily_pieces,
+    split_daily_piece,
 )
 from llm_client import (  # noqa: E402
     call_candidate,
@@ -304,10 +308,12 @@ class DailySnapshot:
     # compile budget is one part covering the whole file; a longer one is split
     # at entry boundaries, and every part still names the byte range it is, so
     # anything compiled from it points back at a real span of a real file.
+    # `level` is the rung of the piece ladder it was cut at (`evidence_resolver`).
     part_index: int = 0
     part_count: int = 1
     byte_start: int = 0
     byte_end: int = 0
+    level: int = 0
 
     @property
     def part_key(self) -> str:
@@ -500,32 +506,34 @@ def _daily_parts(
     compiled: Callable[[str, str], bool] | None = None,
 ) -> list[DailySnapshot]:
     """This day as the one or more parts the compiler still has to take."""
-    bounds = _daily_part_bounds(content)
-    parts = [
+    return [
         DailySnapshot(
             logical_path,
-            content[start:end],
-            sha256_bytes(content[start:end]),
-            part_index=index,
-            part_count=len(bounds),
-            byte_start=start,
-            byte_end=end,
+            content[piece.start : piece.end],
+            sha256_bytes(content[piece.start : piece.end]),
+            part_index=piece.index,
+            part_count=piece.count,
+            byte_start=piece.start,
+            byte_end=piece.end,
+            level=piece.level,
         )
-        for index, (start, end) in enumerate(bounds)
+        for piece in pending_daily_pieces(content, _piece_receipted(logical_path, compiled))
     ]
+
+
+def _piece_receipted(
+    logical_path: str, compiled: Callable[[str, str], bool] | None
+) -> Callable[[bytes], bool]:
     if compiled is None:
-        return parts
-    return [part for part in parts if not compiled(part.logical_path, part.sha256)]
+        return lambda _piece: False
+    return lambda piece: compiled(logical_path, sha256_bytes(piece))
 
 
 def daily_is_compiled(
     logical_path: str, content: bytes, compiled: Callable[[str, str], bool]
 ) -> bool:
-    """Whether every part of this day already has a receipt."""
-    return all(
-        compiled(logical_path, sha256_bytes(content[start:end]))
-        for start, end in _daily_part_bounds(content)
-    )
+    """Whether receipts cover every part of this day, at whatever rung it was cut."""
+    return daily_pieces_compiled(content, _piece_receipted(logical_path, compiled))
 
 
 def _source_descriptor(snapshot: DailySnapshot) -> SourceDescriptor:
@@ -613,7 +621,8 @@ def _record_oversized_daily(logical_path: str) -> None:
 
         record_capture_failure(
             "compile_oversized_daily",
-            f"{logical_path} exceeds the compile input budget and was not compiled",
+            f"{logical_path} exceeds the compile input budget and was not compiled; "
+            f"{COMPILE_CONTEXT_WINDOW_ENV} sets the model's context window",
         )
     except Exception:  # noqa: BLE001 - diagnostics never break a compile
         pass
@@ -626,6 +635,7 @@ def pack_compile_batches(
     token_adapters: Mapping[str, TokenCounter] | None = None,
 ) -> tuple[CompileBatch, ...]:
     budget = _compile_budget(model)
+    inputs = _fitted_pieces(inputs, budget, model, token_adapters)
     measure = _batch_measure(inputs, model, token_adapters)
     daily_paths = {item.logical_path for item in inputs.dailies}
     optional_sources = tuple(
@@ -642,6 +652,61 @@ def pack_compile_batches(
         )
         for paths in _group_dailies(inputs, budget, measure)
     )
+
+
+def _fitted_pieces(
+    inputs: CompileInputs,
+    budget: ContextBudget,
+    model: str | None,
+    token_adapters: Mapping[str, TokenCounter] | None,
+) -> CompileInputs:
+    """Cut every piece that will not fit down the ladder until it does.
+
+    The room for one piece is derived each run: the window, less the answer
+    reserve and slack, less the measured fixed prompt — system text, schema,
+    instructions and the list of existing notes, which grows with the vault.
+    A piece measures what it costs rendered, line labels included, so what is
+    kept fits by construction. One entry with nothing inside to cut at is kept
+    as it is, and the fit check after this refuses it by name.
+    """
+    fixed = _batch_measure(inputs, model, token_adapters)(set())
+    room = budget.available_input_tokens - fixed
+
+    def cost(daily: DailySnapshot) -> int:
+        alone = _batch_measure(replace(inputs, dailies=(daily,)), model, token_adapters)
+        return alone({daily.part_key}) - fixed
+
+    fitted = [piece for daily in inputs.dailies for piece in _fitted_piece(daily, room, cost)]
+    return replace(inputs, dailies=tuple(fitted))
+
+
+def _fitted_piece(
+    daily: DailySnapshot, room: int, cost: Callable[[DailySnapshot], int]
+) -> list[DailySnapshot]:
+    if cost(daily) <= room:
+        return [daily]
+    split = split_daily_piece(daily.content, daily.level)
+    if split is None:
+        return [daily]
+    level, bounds = split
+    return [
+        piece
+        for index, (start, end) in enumerate(bounds)
+        for piece in _fitted_piece(
+            DailySnapshot(
+                daily.logical_path,
+                daily.content[start:end],
+                sha256_bytes(daily.content[start:end]),
+                part_index=index,
+                part_count=len(bounds),
+                byte_start=daily.byte_start + start,
+                byte_end=daily.byte_start + end,
+                level=level,
+            ),
+            room,
+            cost,
+        )
+    ]
 
 
 def _draft_prompt_text(inputs: CompileInputs) -> str:
@@ -700,14 +765,17 @@ def _require_daily_fits(
 ) -> None:
     """Refuse a day the budget cannot take.
 
-    A day is already split by bytes before it gets here, so one part that still
-    will not fit means the budget cannot take this day at all. That is the
+    A day is already cut down the piece ladder before it gets here, so one part
+    that still will not fit is one entry the window cannot take. That is the
     refusal the transactional tests pin, and it names the file.
     """
     if measure({daily.part_key}) <= budget.available_input_tokens:
         return
     _record_oversized_daily(daily.logical_path)
-    raise ValueError("daily source exceeds compile input budget")
+    raise ValueError(
+        f"daily source exceeds compile input budget: {daily.logical_path} at a "
+        f"{budget.max_input_tokens}-token window ({COMPILE_CONTEXT_WINDOW_ENV})"
+    )
 
 
 def _fitting_context(
@@ -3933,8 +4001,9 @@ def _record_receipt_owners(owners: dict[str, str], path: Path) -> None:
         return
     logical = path.relative_to(ROOT).as_posix()
     owners[f"{sha256_bytes(content)}.md"] = path.name
-    for part in _daily_parts(logical, content):
-        owners[f"v3-{compile_source_identity(logical, part.sha256)}.md"] = path.name
+    for piece in daily_piece_tree(content):
+        digest = sha256_bytes(content[piece.start : piece.end])
+        owners[f"v3-{compile_source_identity(logical, digest)}.md"] = path.name
 
 
 def _readable_daily(path: Path) -> bytes | None:
@@ -4071,16 +4140,41 @@ def _mark_started(trigger: str) -> None:
     update_state(_mutate)
 
 
-# One compile budget: a 32k window, 4k reserved for the answer, 1k of slack.
-# Written once, read by batching and by the schema fit check (audit L6).
+# One compile budget: the model's context window, 4k reserved for the answer,
+# 1k of slack. Written once, read by batching and by the schema fit check
+# (audit L6). The window is the owner's setting, because only the owner knows
+# which model the compile reaches; 32k is the safe default (issue #2).
+COMPILE_CONTEXT_WINDOW_ENV = "MEMORY_COMPILE_CONTEXT_TOKENS"
 COMPILE_CONTEXT_WINDOW_TOKENS = 32_768
 COMPILE_ANSWER_RESERVE_TOKENS = 4_000
 COMPILE_SLACK_TOKENS = 1_024
 
 
+def compile_context_window() -> int:
+    """The configured window, refused loudly when it cannot be one.
+
+    A typo that fell back to the default would bring back the refusal the
+    setting exists to end, with nothing saying why.
+    """
+    raw = os.environ.get(COMPILE_CONTEXT_WINDOW_ENV, "").strip()
+    if not raw:
+        return COMPILE_CONTEXT_WINDOW_TOKENS
+    floor = COMPILE_ANSWER_RESERVE_TOKENS + COMPILE_SLACK_TOKENS
+    try:
+        window = int(raw)
+    except ValueError:
+        window = 0
+    if window <= floor:
+        raise ValueError(
+            f"{COMPILE_CONTEXT_WINDOW_ENV} must be a whole number of tokens above "
+            f"{floor}, got {raw[:40]!r}"
+        )
+    return window
+
+
 def _compile_budget(model: str | None) -> ContextBudget:
     return ContextBudget(
-        model, COMPILE_CONTEXT_WINDOW_TOKENS, COMPILE_ANSWER_RESERVE_TOKENS, COMPILE_SLACK_TOKENS
+        model, compile_context_window(), COMPILE_ANSWER_RESERVE_TOKENS, COMPILE_SLACK_TOKENS
     )
 
 
@@ -4352,6 +4446,7 @@ def _run(
         _require_compile_active(deadline, cancelled)
         return _failed_compile(args, inputs, exc)
 
+    _announce_packing(batches)
     outcomes: list[BatchOutcome] = []
     for batch in batches:
         done = _run_batch(
@@ -4376,6 +4471,17 @@ def _announce_compile(args: argparse.Namespace, dailies: Sequence[Path]) -> None
     print(f"compile_memory: compiling {len(dailies)} daily log(s){suffix}:")
     for path in dailies:
         print(f"  - {path.relative_to(ROOT).as_posix()}")
+
+
+def _announce_packing(batches: Sequence[CompileBatch]) -> None:
+    """Say which window the run used, so a scheduled log shows the setting took."""
+    if not batches:
+        return
+    pieces = sum(len(batch.inputs.dailies) for batch in batches)
+    print(
+        f"compile_memory: {pieces} piece(s) in {len(batches)} batch(es) at a "
+        f"{batches[0].packing.max_input_tokens}-token context window."
+    )
 
 
 def _failed_compile(

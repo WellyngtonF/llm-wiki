@@ -419,6 +419,46 @@ Compile runs automatically on MAJOR sessions after the hour cutoff, but you
 can trigger it manually anytime. The pipeline uses VERIFY-BEFORE-WRITE —
 the LLM cannot fabricate citations.
 
+### Compile context window
+
+`MEMORY_COMPILE_CONTEXT_TOKENS` tells the compile how large the context window
+of your model is, in tokens. The default is `32768`. Set it to the window of
+the model your compile provider uses (for example `MEMORY_CODEX_MODEL`). Each
+run keeps 4,000 tokens for the answer and 1,024 of slack. It then measures the
+fixed prompt: system text, schema, instructions, and the list of existing
+notes. What is left is the room for daily-log text.
+
+A long daily log is cut into pieces at entry boundaries: first 16 KiB, then
+8, 4 and 2 KiB until each piece fits that room. Several pieces share one model
+call when the window is large enough. Every committed piece gets its own receipt.
+So a day stays compiled when you change the window, and a day that grows later
+only sends its new entries. A single entry too large for the window is refused
+by name, and the message names the setting.
+
+The size is estimated as one token per UTF-8 byte. That over-counts English
+text about three to four times, so the window's full size is a safe value.
+A value that is not a whole number above 5,024 refuses the compile and names the
+variable. It never falls back to the default without telling you.
+
+The installers persist this variable next to the provider choice. The
+scheduled nightly then uses it too. Set it in the shell you install from, then
+rerun the installer:
+
+```bash
+export MEMORY_COMPILE_CONTEXT_TOKENS=272000
+bash ./install.sh
+```
+
+```powershell
+$env:MEMORY_COMPILE_CONTEXT_TOKENS = "272000"
+.\install.ps1
+```
+
+On Windows the installer writes it to your user environment, and Task Scheduler
+passes it to `LLMWiki-Nightly`. Agent sessions started after the install pick it
+up too. A compile with work to do prints the window it used:
+`compile_memory: N piece(s) in M batch(es) at a 272000-token context window.`
+
 ### Linting and maintenance
 
 ```bash
