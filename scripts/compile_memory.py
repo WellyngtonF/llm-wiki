@@ -3981,12 +3981,24 @@ class _ApplyPlan:
         self._append_vault_file(
             "knowledge/index.md", index_bytes, sources, MAX_INDEX_BYTES
         )
+        self._append_project_pages({**base_notes, **self.pending})
         log_relative = LOG.relative_to(ROOT).as_posix()
         log_source = sources.get(log_relative)
         log_bytes = _append_log_bytes(_log_before(log_source), self._log_entry())
         if len(log_bytes) > MAX_LOG_BYTES:
             raise ValueError("knowledge log exceeds after-image limit")
         self._append_vault_file(log_relative, log_bytes, sources, MAX_LOG_BYTES)
+
+    def _append_project_pages(self, notes: Mapping[str, bytes | None]) -> None:
+        """The project pages as the notes will read once this compile commits."""
+        from project_pages import page_writes
+
+        live = {path: content for path, content in notes.items() if content is not None}
+        for page in page_writes(ROOT, notes=live, guarded=True):
+            if page.content is not None:
+                self.coordinator.ensure_target_parent(page.path)
+            self.changes.append(page.change())
+            self.preconditions[page.path] = page.before
 
     def _vault_sources(self) -> dict[str, object]:
         """What is on disk outranks what one prompt had room to carry.

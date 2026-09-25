@@ -13,10 +13,12 @@ Override: set `LLM_WIKI_STATE_ROOT` before pytest AND
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -91,7 +93,11 @@ def _isolate_test_state_root():
     (state_root / "cache").mkdir(parents=True, exist_ok=True)
     state_file = state_dir / "state.json"
     if not state_file.exists():
-        state_file.write_text("{}\n", encoding="utf-8")
+        # Today's nightly counts as done: a session start a test drives would
+        # otherwise spawn the whole nightly pass detached, against this checkout,
+        # where its index rebuild writes the project pages.
+        today = datetime.now().date().isoformat()
+        state_file.write_text(json.dumps({"last_nightly_date": today}) + "\n", encoding="utf-8")
     yield
     if _EARLY_STATE_ROOT is not None:
         shutil.rmtree(_EARLY_STATE_ROOT, ignore_errors=True)

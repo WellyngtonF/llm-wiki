@@ -498,6 +498,24 @@ change is one transaction, and the tool's answer names it: you can undo it for t
 days with the `doctor` tool (`action=transaction-undo`, `repair=true`, the
 transaction id). The emptied folders are removed once that window has passed.
 
+### Reading a project in Obsidian
+
+Each registered project has a page, `knowledge/projects/<project>/index.md`: open
+it to read what the memory knows about that product. It lists the project's live
+notes grouped by type (decisions first, then patterns, debugging, concepts and Q&A,
+then any other type), each as a link with its one-sentence summary; the module tags
+those notes use, with a count; and, for each repository, its main checkout, a link
+to its work state, the branch, the current task and any open blockers. Superseded
+and archived notes are not listed, so every decision you see is current.
+`knowledge/projects/general/index.md` lists the notes that belong to no registered
+project the same way.
+
+The pages are generated: do not edit them, your edits are replaced. They are
+rewritten after every compile, after every project registration change, and every
+night, which also catches notes you edited by hand and work state that changed
+since. A renamed project's existing notes keep their old `project:` and show on the
+General page until you change it. The pages are private, like your notes.
+
 ### Compiling knowledge manually
 
 ```bash

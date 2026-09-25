@@ -19,8 +19,10 @@ Each registered repository's work state lives at
 folders in step in the same transaction as the map: attaching a repository to
 another project moves its folder, renaming a project moves the project's folder,
 and detaching a repository or removing a project deletes the work-state folder.
-The transaction is undoable for the undo window like any other. Notes are never
-touched.
+The same transaction regenerates the project pages (`project_pages`): a new
+project gets its page, a renamed one's page moves, a removed one's goes and its
+notes are listed on the General page. The transaction is undoable for the undo
+window like any other. Notes are never touched.
 """
 from __future__ import annotations
 
@@ -641,8 +643,15 @@ def _restated(vault: Path, source: str, destination: str, plan: _FolderPlan) -> 
         )
 
 
+def _work_state_files(vault: Path, folder: str) -> list[str]:
+    """A folder's files, less the generated project page the edit regenerates itself."""
+    from project_pages import is_project_page
+
+    return [relative for relative in _tree_files(vault, folder) if not is_project_page(relative)]
+
+
 def _plan_move(vault: Path, source: str, destination: str, plan: _FolderPlan) -> None:
-    files = _tree_files(vault, source)
+    files = _work_state_files(vault, source)
     if not files:
         return
     plan.moved_folders.append((source, destination))
@@ -672,7 +681,7 @@ def _restate_moved(vault: Path, plan: _FolderPlan) -> None:
 
 
 def _plan_delete(vault: Path, folder: str, plan: _FolderPlan) -> None:
-    files = _tree_files(vault, folder)
+    files = _work_state_files(vault, folder)
     if not files:
         return
     plan.deleted_folders.append(folder)
@@ -712,6 +721,46 @@ def _folder_plan(
                 _plan_move(vault, folder, destination, plan)
     _restate_moved(vault, plan)
     return plan
+
+
+def _placements_after(
+    vault: Path, before: ProjectMap, after: ProjectMap, plan: _FolderPlan
+) -> list:
+    """Each repository of the edited map, in the folder it occupies once the edit commits.
+
+    A folder the edit moves is where the move puts it; a folder name worked out
+    from disk before the move could name the wrong one of two same-named checkouts.
+    """
+    from project_pages import Repository
+    from work_state import placements
+
+    held = _placed_by_repository(vault, before)
+    found = []
+    for placement in placements(vault, project_map=after):
+        relative = f"{PROJECTS_RELATIVE}/{placement.relative}"
+        current = held.get(repository_key(placement.repository), "")
+        for source, target in plan.moved_folders:
+            if current == source or current.startswith(f"{source}/"):
+                relative = target + current[len(source):]
+                break
+        project, folder = relative.removeprefix(f"{PROJECTS_RELATIVE}/").split("/", 1)
+        found.append(Repository(project, folder, placement.repository))
+    return found
+
+
+def _page_writes(vault: Path, before: ProjectMap, after: ProjectMap, plan: _FolderPlan) -> list:
+    """The project pages as they read once the map edit and its folder changes commit."""
+    from project_pages import page_writes
+
+    overlay: dict[str, bytes | None] = {source: None for source, _target in plan.moves}
+    overlay.update({source: None for source in plan.deletes})
+    overlay.update(plan.written)
+    return page_writes(
+        vault,
+        project_map=after,
+        repositories=_placements_after(vault, before, after, plan),
+        overlay=overlay,
+    )
 
 
 def _folder_changes(plan: _FolderPlan) -> tuple[list, dict[str, object]]:
@@ -793,6 +842,17 @@ def _work_state_report(plan: _FolderPlan, transaction_id: str | None) -> dict:
     return {"work_state": report}
 
 
+def _pages_report(pages: list) -> dict:
+    if not pages:
+        return {}
+    return {
+        "project_pages": {
+            "written": [page.path for page in pages if page.content is not None],
+            "deleted": [page.path for page in pages if page.content is None],
+        }
+    }
+
+
 def _work_state_message(plan: _FolderPlan) -> str:
     parts = []
     if plan.moved_folders:
@@ -811,11 +871,12 @@ def _write_map(
     after: bytes,
     action: str,
     plan: _FolderPlan,
+    pages: list,
     *,
     deadline: float,
     cancelled: Callable[[], bool] | None,
 ) -> str:
-    """Write the map and its folder changes as one transaction; its id."""
+    """Write the map, its folder changes and its project pages as one transaction; its id."""
     from markdown_transaction import (
         ABSENT,
         MarkdownChange,
@@ -832,14 +893,22 @@ def _write_map(
         change = MarkdownChange.replace(MAP_RELATIVE_PATH, after, max_before_bytes=MAX_MAP_BYTES)
         expected = sha256_bytes(before)
     folder_changes, folder_preconditions = _folder_changes(plan)
-    destinations = [target for _source, target in plan.moved_folders]
+    created = [page.path for page in pages if page.content is not None]
+    destinations = [
+        *(target for _source, target in plan.moved_folders),
+        *(path.rsplit("/", 1)[0] for path in created),
+    ]
     try:
-        for _source, target in plan.moves:
+        for target in [*(target for _source, target in plan.moves), *created]:
             coordinator.ensure_target_parent(target)
         record = coordinator.prepare(
-            [change, *folder_changes],
+            [change, *folder_changes, *(page.change() for page in pages)],
             operation_id=f"project-map:{action}:{uuid.uuid4().hex}",
-            preconditions={MAP_RELATIVE_PATH: expected, **folder_preconditions},
+            preconditions={
+                MAP_RELATIVE_PATH: expected,
+                **folder_preconditions,
+                **{page.path: page.before for page in pages},
+            },
             deadline=deadline,
             cancelled=cancelled,
         )
@@ -889,10 +958,12 @@ def manage_project(
     parsed_before = draft.parsed()
     outcome = edit(vault, draft, request)
     plan = _FolderPlan()
+    pages: list = []
     transaction_id = None
     if outcome.changed:
         after = draft.text().encode("utf-8")
         plan = _folder_plan(vault, parsed_before, draft.parsed(), outcome, action)
+        pages = _page_writes(vault, parsed_before, draft.parsed(), plan)
         transaction_id = _write_map(
             vault,
             state_root,
@@ -900,6 +971,7 @@ def manage_project(
             after,
             action,
             plan,
+            pages,
             deadline=deadline,
             cancelled=cancelled,
         )
@@ -914,6 +986,7 @@ def manage_project(
         "message": message,
         **outcome.extra,
         **_work_state_report(plan, transaction_id),
+        **_pages_report(pages),
         "map": MAP_RELATIVE_PATH,
         "projects": draft.parsed().as_data(),
     }

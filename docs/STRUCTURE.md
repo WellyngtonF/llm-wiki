@@ -73,7 +73,9 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   ├── notes/                       durable OKF pages (flat slugs)
 │   ├── projects/project-map.md      private project map (registered projects)
 │   ├── projects/<project>/          one folder per registered project
+│   │   ├── index.md                 generated project page (never hand-edited)
 │   │   └── <repository>/            its append-only journal.md + state.md projection
+│   ├── projects/general/index.md    generated page: live notes of no registered project
 │   │                                (only state.md/context.md join the corpus;
 │   │                                unregistered work has no folder — ADR 0002)
 │   ├── raw/                         immutable sources
@@ -603,8 +605,28 @@ or nonzero active state remains fail-closed.
   so a folder that moves keeps its journal and sequence. A repository with no
   journal yet takes `<repository>-<8 hex of its main checkout>`, suffixed `-2`,
   `-3` … when an earlier journal under that key was deleted.
-  `knowledge/projects/<project>/index.md` is reserved for the generated project
-  page (issue #17).
+  `knowledge/projects/<project>/index.md` is the generated project page, and
+  `knowledge/projects/general/index.md` the General page (`scripts/project_pages.py`,
+  ADR 0002, ADR 0003). A project page lists the project's live notes (frontmatter
+  `project:` naming it; superseded, archived, deprecated and rejected notes and
+  anything under an `archive/` folder are left out) grouped by type — decisions,
+  patterns, debugging, concepts, Q&A, then any other type — each as
+  `- [[slug]] — <one-sentence summary>`, sorted by title; a Modules section with
+  the notes' `tags:` and how many notes use each; and a Work state section per
+  repository with its folder, main checkout, a link to its `state.md`, the branch
+  of its newest checkpoint, its current task and its open blockers. The General
+  page lists, the same way, every live note whose `project:` is absent or names no
+  registered project (a removed project's notes land there). Both pages carry
+  frontmatter `type: project-context` and `generated: true`, and are rendered
+  deterministically. They are regenerated, and written only when their bytes
+  change, in the same transaction as the index rebuild after a compile
+  (`scripts/rebuild_memory_index.py`), in every `manage_project` transaction, and
+  by the nightly step `pages`, which runs the index rebuild. A stale page is
+  deleted only while it still says `generated: true`. In a compile, a page whose
+  work-state lines the model-output guard would refuse is written with links
+  only. The pages are private (under the `knowledge/projects/*` denial), never
+  named by the tracked `knowledge/index.md`, and derived: `index.md` is an
+  editorial name, so lint, the retrieval corpus and the claim tree skip them.
   `context.md` is written on request, for a registered project only, by
   `uv run python scripts/build_context.py <project> --write` into
   `knowledge/projects/<project>/`; see
@@ -629,8 +651,10 @@ or nonzero active state remains fail-closed.
   project moves it. Every edit keeps the work-state folders in step in the same
   transaction as the map: attaching a repository to another project moves its
   folder, renaming a project moves the project's folder, and detaching a
-  repository or removing a project deletes its work-state folder. Notes are never
-  touched. The transaction can be undone for two days (doctor
+  repository or removing a project deletes its work-state folder. The same
+  transaction regenerates the project pages. Notes are never touched, so a
+  renamed project's notes keep the old `project:` and are listed on the General
+  page until their frontmatter names the new one. The transaction can be undone for two days (doctor
   `transaction-undo`); the directories it emptied stay until then, because the
   undo puts the files back into them, and the next edit after the window removes
   them. Doctor's `projects` check reports duplicate projects, a

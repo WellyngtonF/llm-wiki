@@ -358,8 +358,11 @@ def test_attaching_the_repository_to_another_project_moves_its_work_state(
     ]
     assert "work state moved to knowledge/projects/product-b/backend" in response["data"]["message"]
     assert _project_files(vault) == [
+        "general/index.md",
+        "product-a/index.md",
         "product-b/backend/journal.md",
         "product-b/backend/state.md",
+        "product-b/index.md",
         "project-map.md",
     ]
     assert 'project: "product-b"' in _frontmatter(_folder(vault, "product-b/backend/state.md"))
@@ -438,27 +441,35 @@ def test_removing_the_project_deletes_its_folder_and_leaves_the_notes(vault, wor
     response = _call({"action": "remove", "name": "product-a"})
 
     assert response["data"]["work_state"]["deleted"] == ["knowledge/projects/product-a"]
-    assert _project_files(vault) == ["project-map.md"]
+    assert _project_files(vault) == ["general/index.md", "project-map.md"]
     assert note.read_bytes() == before
 
     _edit_in(checkout)
-    assert _project_files(vault) == ["project-map.md"]
+    assert _project_files(vault) == ["general/index.md", "project-map.md"]
 
 
 def test_an_emptied_folder_is_removed_once_its_undo_window_has_passed(vault, worked) -> None:
     """The undo needs the directories it put the files back into; after two days nothing does."""
     checkout, _note = worked
     _call({"action": "detach", "directory": str(checkout)})
-    emptied = [_folder(vault, "product-a/backend"), _folder(vault, "product-a")]
-    assert all(folder.is_dir() for folder in emptied)
+    emptied = _folder(vault, "product-a/backend")
+    assert emptied.is_dir()
     three_days_ago = time.time() - 3 * 86400
-    for folder in emptied:
-        os.utime(folder, (three_days_ago, three_days_ago))
+    os.utime(emptied, (three_days_ago, three_days_ago))
 
     _call({"action": "list"})
     _call({"action": "create", "name": "product-b"})
 
-    assert _projects_area(vault) == ["project-map.md"]
+    assert not emptied.exists()
+    assert _projects_area(vault) == [
+        "general",
+        "general/index.md",
+        "product-a",
+        "product-a/index.md",
+        "product-b",
+        "product-b/index.md",
+        "project-map.md",
+    ]
 
 
 # --- readers ------------------------------------------------------------------------
