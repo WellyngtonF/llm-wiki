@@ -45,21 +45,34 @@ def test_resolve_wikilink_not_found(fake_graph):
         assert result is None
 
 
-def test_resolve_path_wikilink_uses_the_one_existing_candidate(fake_graph):
-    target = MagicMock()
-    target.resolve.return_value = target
-    target.exists.return_value = True
-    target.is_file.return_value = True
-    target.read_text.return_value = "# Active"
-    target.relative_to.return_value.as_posix.return_value = "knowledge/notes/page.md"
-    missing = MagicMock()
-    missing.resolve.return_value = missing
-    missing.exists.return_value = False
-    with patch.object(fake_graph, "ROOT") as root:
-        root.__truediv__.side_effect = [missing, target]
-        assert fake_graph._resolve_wikilink("knowledge/notes/page.md") == (
-            "knowledge/notes/page.md"
-        )
+def test_a_slash_link_is_a_path_from_the_vault_root_as_lint_reads_it(
+    fake_graph, tmp_path, monkeypatch
+):
+    """`[[projects/a/page]]` is read from `knowledge/`, not from the repository root."""
+    notes = tmp_path / "knowledge" / "notes"
+    notes.mkdir(parents=True)
+    (tmp_path / "knowledge" / "projects" / "product-a").mkdir(parents=True)
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "outside.md").write_text("# Outside\n", encoding="utf-8")
+    (tmp_path / "knowledge" / "projects" / "product-a" / "context.md").write_text(
+        "# Context\n", encoding="utf-8"
+    )
+    (notes / "beta.md").write_text("# Beta\n", encoding="utf-8")
+    (notes / "alpha.md").write_text(
+        "# Alpha\n\n[[projects/product-a/context]] [[notes/beta.md]]"
+        " [[knowledge/notes/beta]] [[../scripts/outside]]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fake_graph, "ROOT", tmp_path)
+    monkeypatch.setattr(fake_graph, "KNOWLEDGE_DIR", notes)
+    monkeypatch.setattr(fake_graph, "_read_active_link_graph", lambda *_a, **_k: None)
+
+    fake_graph.rebuild_graph_cache()
+
+    assert fake_graph.get_neighbors("knowledge/notes/alpha.md") == [
+        "knowledge/notes/beta.md",
+        "knowledge/projects/product-a/context.md",
+    ]
 
 
 def test_get_neighbors_returns_links(fake_graph):

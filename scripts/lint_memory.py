@@ -193,7 +193,7 @@ def _resolve_bare_link(target: str) -> Path | None:
     return min(found, key=lambda path: (len(path.parts), path.as_posix()))
 
 
-def _resolve_link(target: str) -> Path | None:
+def resolve_link(target: str) -> Path | None:
     """Where Obsidian, with the vault rooted at `knowledge/`, opens this link."""
     stripped = target.strip()
     if not stripped:
@@ -274,7 +274,7 @@ def _scannable_page(md: Path, tracked: set[str] | None) -> bool:
     return relative is not None and relative in tracked
 
 
-def _is_placeholder_target(target: str) -> bool:
+def is_placeholder_target(target: str) -> bool:
     """Templates and prose examples are not links to resolve."""
     stripped = target.strip()
     if stripped in ("...", "wikilinks"):
@@ -295,9 +295,9 @@ def _tracked_target_finding(
 
 
 def _link_finding(md: Path, target: str, tracked: set[str] | None) -> str | None:
-    if _is_placeholder_target(target):
+    if is_placeholder_target(target):
         return None
-    resolved = _resolve_link(target)
+    resolved = resolve_link(target)
     if resolved is None:
         return f"{_rel(md)} -> [[{target}]]"
     return _tracked_link_finding(md, target, resolved, tracked)
@@ -712,7 +712,7 @@ def check_invalid_supersede_chain(pages: list[Path]) -> list[str]:
     out: list[str] = []
     for md in pages:
         target = _supersede_target(md)
-        if target and _resolve_link(target) is None:
+        if target and resolve_link(target) is None:
             out.append(f"{_rel(md)} -> superseded_by [[{target}]] (target not found)")
     return out
 

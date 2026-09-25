@@ -123,12 +123,25 @@ def _resolve_wikilink(target: str, *, deadline: float | None = None) -> str | No
 
 def _wikilink_candidates(target: str) -> list[Path]:
     if "/" in target:
-        # Path-style: try as-is and with .md
-        return [ROOT / (target + ".md"), ROOT / target]
+        # A path from the vault root, `knowledge/`, as lint and Obsidian read it.
+        vault = ROOT / "knowledge"
+        return [
+            candidate
+            for candidate in (vault / f"{target}.md", vault / target)
+            if _inside(candidate, vault)
+        ]
     # Bare name: search for <name>.md in wiki + knowledge
     if not KNOWLEDGE_DIR.exists():
         return []
     return sorted(KNOWLEDGE_DIR.rglob(f"{target}.md"))
+
+
+def _inside(candidate: Path, vault: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(vault.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _active_vault_file(candidate: Path) -> str | None:
