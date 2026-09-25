@@ -488,8 +488,8 @@ compile time, never from the model: a repository moved to another project files 
 new notes there, and one no longer in the map gives none. When the evidence spans
 several projects, the note takes the one most cited entries name; entries from
 unregistered work count as a side of their own, and a tie gives no project. An
-update never changes a note's frontmatter, so an existing `project:` stays as it
-is and a note without one does not gain it.
+update never changes a note's `project:`, so an existing one stays as it is and a
+note without one does not gain it.
 
 The folders follow the map. Attaching a repository to another project moves its
 folder, renaming a project moves the project's folder, and detaching a repository
@@ -548,6 +548,21 @@ itself. An update adds its new links to the note's `## Related` section, opening
 one above the `## Claims` ledger if the note has none. Every other link is
 dropped, and the compile's line in `knowledge/log.local.md` names it:
 `Dropped links: [[x]] (from slug-a).`
+
+The model also tags each note with the modules it is about: areas inside a
+repository, such as a service or a subsystem, never the project itself. The draft
+reads the tags the live notes of each project in the batch already use, and for
+work in no registered repository the tags of notes without a project; it is told
+to reuse one and to create a new tag only when none fits. The compile folds each
+tag to lowercase kebab-case of at most 40 characters, drops the note's own project
+name and repeats, and keeps five per note. A new note gets them as
+`tags: [backend, queue]`. An update appends its new tags after the note's existing
+ones and never removes one; a note stops gaining tags at eight, and one whose
+`tags:` is not a list is left alone. A tag that no live note of the same project
+carried before is new, and the compile's log line names it:
+`New tags: backend-lease (product-a), cli (no project).` The same name in two
+projects counts as two tags, because it names two different modules. Tags are
+never claims, so the `## Claims` ledger does not carry them.
 
 ### Compile context window
 

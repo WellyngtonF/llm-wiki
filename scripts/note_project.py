@@ -67,13 +67,14 @@ class NoteProjects:
                 if start <= offset < end:
                     entries[(source, start)] = content[start:end]
                     break
-        votes = Counter(self._entry_project(entry) for entry in entries.values())
+        votes = Counter(self.of_entry(entry) for entry in entries.values())
         ranked = votes.most_common(2)
         if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
             return None
         return ranked[0][0]
 
-    def _entry_project(self, entry: bytes) -> str | None:
+    def of_entry(self, entry: bytes) -> str | None:
+        """The project one daily entry's work belongs to, or None."""
         lines = [line.strip() for line in entry.decode("utf-8", "replace").splitlines()[1:]]
         body = list(dropwhile(lambda line: not line, lines))
         crumb = _BREADCRUMB.match(body[0]) if body else None

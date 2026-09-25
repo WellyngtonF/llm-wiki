@@ -6,7 +6,7 @@ capture or session-end entry's `- Repository:` line, or a breadcrumb's
 `<project>/<repository>` tag, looked up in the project map as it is now. Work in
 no registered repository gives no project; evidence split between projects gives
 the project most cited entries name, and a tie gives none. An update never
-touches the existing note's frontmatter.
+touches the existing note's `project:`.
 
 Each test runs the compile command over a temporary vault with the fake provider
 and reads the note a person would open.
