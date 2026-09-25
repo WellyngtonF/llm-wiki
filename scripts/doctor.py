@@ -101,7 +101,6 @@ DEFAULT_TIME_BUDGET_SECONDS = 5.0
 READ_BUSY_MS = 250
 DEFAULT_GENERATION_TIME_BUDGET_SECONDS = 60.0
 DEFAULT_GENERATION_SOURCE_LIMIT = 10_000
-GENERATION_FRESH_SECONDS = 24 * 60 * 60
 # An unregistered, invalid generation directory touched this recently may be a build
 # in flight under another fence; the longest builder bound is 15 minutes. See
 # `docs/research/2026-09-14-a-build-in-flight-is-not-an-orphan.md`; the rule itself is
@@ -4208,8 +4207,9 @@ def _scope_state(manifest: dict, repository_scope: object) -> str:
     Comparing the whole scope made every commit read as `mismatched`, which
     says the generation belongs to another repository. It does not: only the
     commit moved, and how far behind the generation is already has its own
-    signals. `superseded` is treated exactly like a mismatch by every caller —
-    it only stops the report from saying something untrue.
+    signals. `superseded` is therefore current enough: the refresh reuses a
+    generation across a commit (`_parent_matches_identity`), so degrading on it
+    recommended a refresh that answers `current` and never cleared.
     """
     from repository_scope import same_repository_record
 
@@ -4359,8 +4359,14 @@ def _generation_age(seal: tuple, catalog_info, now: datetime) -> tuple[int, str]
     return max(0, (now_ns - timestamp_ns) // 1_000_000_000), age_source
 
 
+# A scope the refresh would reuse. See `_scope_state`.
+_REUSABLE_SCOPE_STATES = ("current", "superseded")
+
+
 def _identity_stale(facts: _GenerationFacts, complete_v2: bool) -> bool:
-    if facts.scope_state != "current" or facts.corpus_extraction_state != "current":
+    if facts.scope_state not in _REUSABLE_SCOPE_STATES:
+        return True
+    if facts.corpus_extraction_state != "current":
         return True
     return facts.graph_extraction_state != "current" or not complete_v2
 
@@ -4395,8 +4401,15 @@ def _generation_message(degraded: bool, extraction_faults: int) -> str:
     return "Evidence generation is healthy."
 
 
-def _generation_is_stale(facts: _GenerationFacts, age: float, complete_v2: bool) -> bool:
-    if facts.delta or age > GENERATION_FRESH_SECONDS:
+def _generation_is_stale(facts: _GenerationFacts, complete_v2: bool) -> bool:
+    """Stale is what the nightly refresh would rebuild, and nothing else.
+
+    Age is not on that list: a generation with no unindexed source and a current
+    identity is answered `current` by the refresh however old it is, so a day-old
+    limit degraded a quiet vault with a finding no refresh could clear. The age is
+    still reported.
+    """
+    if facts.delta:
         return True
     return _identity_stale(facts, complete_v2)
 
@@ -4412,7 +4425,7 @@ def _generation_health_result(
     age, age_source = _generation_age(seal, catalog_info, now)
     vector_state = str(manifest["vector_state"])
     complete_v2 = manifest.get("schema_version") == "corpus-generation/v2"
-    stale = _generation_is_stale(facts, age, complete_v2)
+    stale = _generation_is_stale(facts, complete_v2)
     # What this status answers is whether the generation is usable and current,
     # so it degrades on the things a refresh fixes. An unresolved reference is
     # what indexing real code looks like — this repository alone has 21199 of

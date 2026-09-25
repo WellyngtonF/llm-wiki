@@ -376,7 +376,7 @@ def _post_compile_steps() -> list[_Step]:
         ),
         _Step(
             # Issue #24, section D1: a foreign generation is never activated,
-            # so the pruner below reports it pending and keeps it forever.
+            # so the pruner below names it a code generation and keeps it.
             # This retires, per checkout, every generation of a checkout that
             # is gone or marked not indexed and all but the newest two of the
             # rest, each repository under its own fence.
