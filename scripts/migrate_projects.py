@@ -810,6 +810,10 @@ def _clear_stale_keys(stale: set[str]) -> None:
 
 def apply_migration(vault: Path, state_root: Path, plan: Plan) -> dict:
     changes, preconditions, destinations = _changes(vault, plan)
+    pages = _page_changes(vault, plan, changes)
+    for page in pages:
+        changes[vault / page.path] = page.content
+        preconditions[page.path] = page.before
     try:
         record = mutate_knowledge(
             _operation_id("apply"),
@@ -824,8 +828,40 @@ def apply_migration(vault: Path, state_root: Path, plan: Plan) -> dict:
     stale = {key for key in _pending_keys(state_root) if not _is_live_key(key, vault, plan.final, moved)}
     if stale:
         _clear_stale_keys(stale)
-    # Issue #17: the project pages are regenerated here once they exist.
-    return {"transaction_id": record.id, "leftovers_removed": removed, "keys_cleared": sorted(stale)}
+    return {
+        "transaction_id": record.id,
+        "leftovers_removed": removed,
+        "keys_cleared": sorted(stale),
+        "project_pages": sorted(page.path for page in pages),
+    }
+
+
+def _page_changes(vault: Path, plan: Plan, changes: dict[Path, bytes | None]) -> list:
+    """The project pages as they read once the migration commits, in the same transaction."""
+    from project_pages import NOTES_RELATIVE, Repository, _disk_notes, page_writes
+    from work_state import placements
+
+    written = {path.relative_to(vault).as_posix(): content for path, content in changes.items()}
+    notes = {
+        relative: content
+        for relative, content in _disk_notes(vault).items()
+        if written.get(relative, content) is not None
+    }
+    notes.update(
+        {
+            relative: content
+            for relative, content in written.items()
+            if relative.startswith(f"{NOTES_RELATIVE}/") and content is not None
+        }
+    )
+    overlay = {relative: content for relative, content in written.items() if relative.startswith(f"{PROJECTS}/")}
+    repositories = [
+        Repository(placement.project, placement.folder, placement.repository)
+        for placement in placements(vault, project_map=plan.final)
+    ]
+    return page_writes(
+        vault, notes=notes, project_map=plan.final, repositories=repositories, overlay=overlay
+    )
 
 
 # --- reporting -------------------------------------------------------------------

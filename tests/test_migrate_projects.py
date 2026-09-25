@@ -326,9 +326,19 @@ def test_apply_moves_kept_journals_deletes_the_rest_and_can_be_undone(world):
     assert _project_files(vault) == [
         "alpha/alpha/journal.md",
         "alpha/alpha/state.md",
+        "alpha/index.md",
+        "general/index.md",
         "product-b/beta/journal.md",
         "product-b/beta/state.md",
+        "product-b/index.md",
         "project-map.md",
+    ]
+    assert "[[cache-strategy]]" in (vault / PROJECTS / "alpha/index.md").read_text("utf-8")
+    assert "[[general-tip]]" in (vault / PROJECTS / "general/index.md").read_text("utf-8")
+    assert report["project_pages"] == [
+        "knowledge/projects/alpha/index.md",
+        "knowledge/projects/general/index.md",
+        "knowledge/projects/product-b/index.md",
     ]
     assert parse_project_map((vault / PROJECTS / "project-map.md").read_text("utf-8")).as_data() == [
         {"name": "alpha", "repositories": [world["alpha"].as_posix()]},
