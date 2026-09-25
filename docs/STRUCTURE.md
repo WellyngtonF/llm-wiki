@@ -610,7 +610,10 @@ or nonzero active state remains fail-closed.
   `knowledge/projects/<project>/`; see
   `docs/research/2026-09-18-the-project-context-page-gets-its-command-back.md`.
   A folder written before this layout (`knowledge/projects/<slug>/journal.md`) is
-  read by nothing and left alone until the one-off migration (issue #18).
+  read by nothing. The one-off `scripts/migrate_projects.py` moves the journals of
+  real repositories under their project from owner-approved proposals
+  (`knowledge/projects/project-map.proposed.md`, `note-projects.proposed.md`, removed
+  on apply) and deletes the other folders, in one undoable transaction.
 - Daily-log entries name the registered work they came from: a prompt or tool
   breadcrumb carries `<project>/<repository>` in its tag (`-` for unregistered
   work), and a session-end entry or capture block carries ``- Project: `<project>` ``

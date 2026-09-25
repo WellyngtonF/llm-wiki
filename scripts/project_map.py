@@ -325,9 +325,37 @@ def project_map_problems(vault: Path) -> list[MapProblem]:
     content = _read_map_bytes(vault)
     if content is None:
         return []
-    sections = _sections(_decoded(content).splitlines())
+    return map_text_problems(vault, _decoded(content))
+
+
+def map_text_problems(vault: Path, text: str) -> list[MapProblem]:
+    """Every entry a map-shaped text cannot use, as `project_map_problems` reads the map."""
+    sections = _sections(text.splitlines())
     problems = [*_built_map(sections).problems, *_filesystem_problems(vault, sections)]
     return sorted(problems, key=lambda problem: problem.line)
+
+
+def with_repositories(
+    text: str | None, entries: list[tuple[str, Path]]
+) -> tuple[str, list[tuple[str, Path, str]]]:
+    """The map text with each `(project, repository)` registered, and the entries skipped.
+
+    A repository the text already lists stays in the project it is in: this only
+    adds, so whatever the owner registered survives. A skipped entry is returned
+    with the project that already owns it.
+    """
+    draft = _Draft(_NEW_MAP if text is None else text)
+    skipped = []
+    for name, repository in entries:
+        owners = draft.owners(repository)
+        if owners:
+            if owners != [name]:
+                skipped.append((name, repository, owners[0]))
+            continue
+        if not draft.sections_named(name):
+            draft.add_project(name)
+        draft.add_repository(name, repository)
+    return draft.text(), skipped
 
 
 # --- editing -------------------------------------------------------------------
