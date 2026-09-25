@@ -121,7 +121,7 @@ operator-attention evidence. A finished subplan or smoke fixture is not product
 completion. See `knowledge/notes/solo-operator-superset-product-decision.md`.
 
 **Reliable mutation boundary:** automatic Markdown writes use recoverable
-transactions with before/after hashes. Project handoff is projected from an
+transactions with before/after hashes. Work state is projected from an
 append-only `journal.md`. `cache/` and `logs/` are disposable; `run/` must not be
 deleted while doctor reports a nonterminal, conflicted, or quarantined
 transaction, a transaction inside the 2-day undo window, or any retained queue
