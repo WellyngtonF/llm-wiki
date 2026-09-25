@@ -143,7 +143,7 @@ def _attempt(monkeypatch, outcomes: list[str]):
 
     calls: list[int] = []
 
-    def staged(self, descriptor, actions):
+    def staged(self, descriptor, actions, *, final):
         index = len(calls)
         calls.append(1)
         if index >= len(outcomes):

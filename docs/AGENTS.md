@@ -28,16 +28,15 @@ Every knowledge page:
 - `## Related` — wikilinks to sibling notes pages
 
 ## What to lift into knowledge
-Lift an item only if it is:
-- reusable beyond the session it came from,
-- not already derivable from code, config, or existing notes,
-- specific enough to act on ("when X, do Y because Z").
-
-Do NOT lift:
-- status updates, task progress,
-- restatements of file paths or code structure,
-- speculation not validated by use,
-- summaries of `knowledge/raw/` / `knowledge/inbox/` material (those belong in notes after compile).
+The compile's rules live in the program, not here: `DURABILITY_RULES` in
+`scripts/compile_memory.py` is given to both the writer and the reviewer as
+instructions. In short, a note must still be true and useful in three months;
+test counts, build results, pull-request numbers, commit hashes, CI links, task
+status, point-in-time deployment or environment state, one-off machine setup and
+generic documentation knowledge never become notes. A body is only the text under
+its section heading: frontmatter, a `# Title`, and `## Evidence` / `## Claims` /
+`## Related` / `## Sources` are written by the compiler, and a body carrying them
+is rejected.
 
 ## Categories
 - **concepts/** — noun-shaped mental models.
