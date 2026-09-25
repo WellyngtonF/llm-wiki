@@ -48,6 +48,47 @@ Citation = tuple[str, bytes, int]
 """One cited evidence span: its source's identity, the source's bytes, its offset."""
 
 
+def cited_entry(
+    content: bytes, offset: int, spans: Iterable[tuple[str, int, int]] | None = None
+) -> tuple[int, bytes] | None:
+    """The daily entry holding byte `offset` of a daily log: its start and its bytes.
+
+    `spans` is the log's `daily_entries`, for a caller that looks up many offsets.
+    """
+    for _block, start, end in daily_entries(content) if spans is None else spans:
+        if start <= offset < end:
+            return start, content[start:end]
+    return None
+
+
+@dataclass(frozen=True)
+class EntryWork:
+    """Where one daily entry says its work happened, before any map is asked.
+
+    A prompt or tool breadcrumb carries its tag (None when the breadcrumb is
+    malformed); any other entry carries the `- Field: `value`` lines it opens with,
+    the first of a repeated field winning.
+    """
+
+    breadcrumb: bool
+    tag: str | None
+    fields: Mapping[str, str]
+
+    @classmethod
+    def of(cls, entry: bytes) -> EntryWork:
+        lines = [line.strip() for line in entry.decode("utf-8", "replace").splitlines()[1:]]
+        body = list(dropwhile(lambda line: not line, lines))
+        crumb = _BREADCRUMB.match(body[0]) if body else None
+        if crumb is not None:
+            parts = crumb[2].split(" | ")
+            count, index = _TAG_FIELD[crumb[1]]
+            return cls(True, parts[index].strip() if len(parts) == count else None, {})
+        fields: dict[str, str] = {}
+        for field in takewhile(bool, (_METADATA.match(line) for line in body)):
+            fields.setdefault(field[1], field[2])
+        return cls(False, None, fields)
+
+
 @dataclass(frozen=True)
 class NoteProjects:
     project_map: ProjectMap
@@ -60,6 +101,11 @@ class NoteProjects:
             project_map = read_project_map(vault)
         except (OSError, ProjectMapError):
             project_map = ProjectMap((), ())
+        return cls.of_map(vault, project_map)
+
+    @classmethod
+    def of_map(cls, vault: Path, project_map: ProjectMap) -> NoteProjects:
+        """Under a given map, with each registered repository's work state where it is placed."""
         tags = {
             placement.relative: placement.project
             for placement in placements(vault, project_map=project_map)
@@ -70,10 +116,9 @@ class NoteProjects:
         """The project most of the distinct cited entries name, or None."""
         entries: dict[tuple[str, int], bytes] = {}
         for source, content, offset in citations:
-            for _block, start, end in daily_entries(content):
-                if start <= offset < end:
-                    entries[(source, start)] = content[start:end]
-                    break
+            found = cited_entry(content, offset)
+            if found is not None:
+                entries[(source, found[0])] = found[1]
         votes = Counter(self.of_entry(entry) for entry in entries.values())
         ranked = votes.most_common(2)
         if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
@@ -82,22 +127,13 @@ class NoteProjects:
 
     def of_entry(self, entry: bytes) -> str | None:
         """The project one daily entry's work belongs to, or None."""
-        lines = [line.strip() for line in entry.decode("utf-8", "replace").splitlines()[1:]]
-        body = list(dropwhile(lambda line: not line, lines))
-        crumb = _BREADCRUMB.match(body[0]) if body else None
-        if crumb is not None:
-            return self._tag_project(crumb[1], crumb[2])
-        for field in takewhile(bool, (_METADATA.match(line) for line in body)):
-            if field[1] == "Repository":
-                return self.project_map.project_of(field[2])
-        return None
+        return self.of_work(EntryWork.of(entry))
 
-    def _tag_project(self, kind: str, fields: str) -> str | None:
-        parts = fields.split(" | ")
-        count, index = _TAG_FIELD[kind]
-        if len(parts) != count:
-            return None
-        return self.tags.get(parts[index].strip())
+    def of_work(self, work: EntryWork) -> str | None:
+        if work.breadcrumb:
+            return None if work.tag is None else self.tags.get(work.tag)
+        repository = work.fields.get("Repository")
+        return None if repository is None else self.project_map.project_of(repository)
 
 
 def with_renamed_project(content: bytes, project: str) -> bytes | None:

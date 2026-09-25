@@ -889,7 +889,7 @@ def _folder_changes(plan: _FolderPlan) -> tuple[list, dict[str, object]]:
     return changes, preconditions
 
 
-def _prune_empty(vault: Path, folders: list[str]) -> None:
+def prune_empty(vault: Path, folders: list[str]) -> None:
     """Remove directories a failed edit created before anything was written into them."""
     projects = (Path(vault) / PROJECTS_RELATIVE).resolve()
     for folder in folders:
@@ -903,7 +903,7 @@ def _prune_empty(vault: Path, folders: list[str]) -> None:
                 break
 
 
-def _prune_expired_empty(vault: Path, now: float | None = None) -> None:
+def prune_expired_empty(vault: Path, now: float | None = None) -> None:
     """Remove the folders a move or delete emptied, once their undo window has passed.
 
     A committed move or delete leaves its directories in place: the undo puts
@@ -1026,14 +1026,14 @@ def _write_map(
             cancelled=cancelled,
         )
     except PreconditionChangedError as error:
-        _prune_empty(vault, destinations)
+        prune_empty(vault, destinations)
         raise ProjectMapError(
             "map_changed",
             "the project map, a work-state folder or a note changed while it was being "
             "edited; try again",
         ) from error
     except Exception:
-        _prune_empty(vault, destinations)
+        prune_empty(vault, destinations)
         raise
     coordinator.apply(record.id, deadline=deadline, cancelled=cancelled)
     return record.id
@@ -1067,7 +1067,7 @@ def manage_project(
     edit = _EDITS.get(action)
     if edit is None:
         raise ProjectMapError("unknown_action", f"unknown action: {action}")
-    _prune_expired_empty(vault)
+    prune_expired_empty(vault)
     draft = _Draft(_NEW_MAP if before is None else _decoded(before))
     parsed_before = draft.parsed()
     outcome = edit(vault, draft, request)

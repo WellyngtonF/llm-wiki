@@ -7,7 +7,7 @@ import json
 import os
 import re
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -113,6 +113,15 @@ class EvidenceRef:
             f"daily:{self.daily_id} sha256:{self.source_sha256} "
             f"block:{self.block_id} bytes:{self.byte_start}-{self.byte_end}"
         )
+
+
+def references_in(text: str) -> Iterator[EvidenceRef]:
+    """Every valid evidence reference written in `text`, in order; a malformed one is skipped."""
+    for match in _REF_RE.finditer(text):
+        try:
+            yield EvidenceRef.parse(match.group(0))
+        except ValueError:
+            continue
 
 
 @dataclass(frozen=True)

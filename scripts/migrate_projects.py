@@ -74,7 +74,6 @@ import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from itertools import dropwhile, takewhile
 from pathlib import Path
 from typing import TextIO
 
@@ -83,10 +82,10 @@ from blackboard import STREAM_NAMES as BLACKBOARD_STREAMS  # noqa: E402
 from blackboard import live_claim_projects  # noqa: E402
 from bounded_io import MAX_KNOWLEDGE_PAGE_BYTES, read_stable_bytes  # noqa: E402
 from corpus_snapshot import read_frontmatter  # noqa: E402
-from evidence_resolver import _REF_RE, EvidenceRef, daily_entries  # noqa: E402
+from evidence_resolver import EvidenceRef, daily_entries, references_in  # noqa: E402
 from markdown_transaction import ABSENT, mutate_knowledge  # noqa: E402
 from memory_state import ROOT, STATE_ROOT, update_state  # noqa: E402
-from note_project import _BREADCRUMB, _METADATA, _TAG_FIELD  # noqa: E402
+from note_project import EntryWork, NoteProjects, cited_entry  # noqa: E402
 from page_status import is_retired  # noqa: E402
 from project_journal import (  # noqa: E402
     legacy_state_project_root,
@@ -99,11 +98,11 @@ from project_map import (  # noqa: E402
     RESERVED_PROJECT_NAMES,
     ProjectMap,
     ProjectMapError,
-    _prune_empty,
-    _prune_expired_empty,
     map_text_problems,
     parse_project_map,
     project_name,
+    prune_empty,
+    prune_expired_empty,
     repository_key,
     resolve_repository,
     with_repositories,
@@ -483,38 +482,32 @@ def live_notes(vault: Path) -> list[Note]:
 
 
 class _EntryProjects:
-    """The project a daily entry's work belongs to under a given map."""
+    """The project a daily entry's work belongs to under a given map.
 
-    def __init__(self, project_map: ProjectMap, folders: list[OldFolder], resolve: _Resolver):
+    The compile's reading (`note_project.NoteProjects`), extended with what entries
+    written before the map carried: a breadcrumb tag that is an old folder's slug,
+    and `Project root:` and `Project slug:` lines.
+    """
+
+    def __init__(
+        self, vault: Path, project_map: ProjectMap, folders: list[OldFolder], resolve: _Resolver
+    ):
         self.map = project_map
+        self.projects = NoteProjects.of_map(vault, project_map)
         self.slugs = {folder.name: folder.repository for folder in folders if folder.repository}
         self.resolve = resolve
 
     def of(self, entry: bytes) -> str | None:
-        lines = [line.strip() for line in entry.decode("utf-8", "replace").splitlines()[1:]]
-        body = list(dropwhile(lambda line: not line, lines))
-        crumb = _BREADCRUMB.match(body[0]) if body else None
-        if crumb is not None:
-            return self._tag(crumb[1], crumb[2])
-        fields = {match[1]: match[2] for match in takewhile(bool, map(_METADATA.match, body))}
-        if "Repository" in fields:
-            return self.map.project_of(fields["Repository"])
-        if "Project root" in fields:
-            return self._root(fields["Project root"])
-        if "Project slug" in fields:
-            return self._slug(fields["Project slug"])
+        work = EntryWork.of(entry)
+        if work.breadcrumb and work.tag is not None and "/" not in work.tag:
+            return self._slug(work.tag)
+        if work.breadcrumb or "Repository" in work.fields:
+            return self.projects.of_work(work)
+        if "Project root" in work.fields:
+            return self._root(work.fields["Project root"])
+        if "Project slug" in work.fields:
+            return self._slug(work.fields["Project slug"])
         return None
-
-    def _tag(self, kind: str, text: str) -> str | None:
-        parts = text.split(" | ")
-        count, index = _TAG_FIELD[kind]
-        if len(parts) != count:
-            return None
-        tag = parts[index].strip()
-        if "/" in tag:
-            project = tag.split("/", 1)[0]
-            return project if self.map.project_named(project) is not None else None
-        return self._slug(tag)
 
     def _root(self, root: str) -> str | None:
         resolved = self.resolve(root)
@@ -541,20 +534,15 @@ class _DailyLogs:
         log = self._logs[reference.daily_id]
         if log is None:
             return None
-        content, entries = log
-        for _block, start, end in entries:
-            if start <= reference.byte_start < end:
-                return reference.daily_id, start, content[start:end]
-        return None
+        content, spans = log
+        found = cited_entry(content, reference.byte_start, spans)
+        return None if found is None else (reference.daily_id, *found)
 
 
 def _cited_entries(note: Note, logs: _DailyLogs) -> dict[tuple[str, int], bytes]:
     entries = {}
-    for match in _REF_RE.finditer(note.content.decode("utf-8", errors="replace")):
-        try:
-            found = logs.entry(EvidenceRef.parse(match.group(0)))
-        except ValueError:
-            continue
+    for reference in references_in(note.content.decode("utf-8", errors="replace")):
+        found = logs.entry(reference)
         if found is not None:
             entries[found[:2]] = found[2]
     return entries
@@ -636,7 +624,7 @@ def propose(vault: Path, *, force: bool = False, write: bool = True) -> dict:
     final_text, _skipped = with_repositories(_decoded(before), entries)
     final = parse_project_map(final_text)
     notes_text, rows = _notes_proposal(
-        live_notes(vault), _EntryProjects(final, folders, resolve), _DailyLogs(vault)
+        live_notes(vault), _EntryProjects(vault, final, folders, resolve), _DailyLogs(vault)
     )
     report.update(
         {
@@ -968,7 +956,7 @@ def apply_migration(vault: Path, state_root: Path, plan: Plan) -> dict:
             preconditions=preconditions,
         )
     except Exception:
-        _prune_empty(vault, destinations)
+        prune_empty(vault, destinations)
         raise
     removed = _remove_leftovers(vault, plan)
     moved = {folder.key for folder, _placement in plan.keeps if folder.key}
@@ -1168,7 +1156,7 @@ def _nothing_left(vault: Path) -> bool:
 
 def _run_plan(vault: Path, state_root: Path, arguments: argparse.Namespace) -> int:
     if arguments.apply:
-        _prune_expired_empty(vault)
+        prune_expired_empty(vault)
     try:
         plan = plan_migration(vault, state_root)
     except (OSError, RuntimeError, ValueError) as error:
