@@ -64,7 +64,7 @@ LLM Wiki даёт каждому AI-агенту, которым вы польз
 - **Redaction секретов** — API-ключи, токены, длинные base64 вычищаются до любой записи
 
 ### Agent-native интерфейс
-- **MCP-first доступ** — 12 локальных task-shaped инструментов для recall, контекста, решений, обслуживания, code intelligence и `doctor`
+- **MCP-first доступ** — 13 локальных task-shaped инструментов для recall, контекста, решений, обслуживания, code intelligence и `doctor`
 - **Единый response envelope** — каждый инструмент сообщает версию схемы, freshness, качество evidence, warnings и data; MCP resources публикуют health и context
 - **Автоматическое здоровье** — SessionStart молчит при норме и инжектирует только degraded/error результаты; `doctor(repair=true)` выполняет лишь безопасные идемпотентные локальные исправления
 
@@ -344,7 +344,7 @@ uv run python benchmark/run_flush_classification.py --corpus benchmark/flush-cla
 
 ### MCP agent interface
 
-Локальный stdio MCP-сервер предоставляет **12 task-shaped инструментов**, включая `doctor`, единый response envelope и health/context resources. `find_dead_code(directory)` возвращает консервативные кандидаты, а `get_architecture(directory)` — entry points, routes, hotspots по canonical symbol ID и communities. Анализ файловой системы требует явно заданную существующую директорию, не принимает корень диска и не использует CWD как fallback.
+Локальный stdio MCP-сервер предоставляет **13 task-shaped инструментов**, включая `doctor`, единый response envelope и health/context resources. `find_dead_code(directory)` возвращает консервативные кандидаты, а `get_architecture(directory)` — entry points, routes, hotspots по canonical symbol ID и communities. Анализ файловой системы требует явно заданную существующую директорию, не принимает корень диска и не использует CWD как fallback.
 
 Точные режимы `definition`, `references`, `implementations`, `type`,
 `diagnostics` и позиционные `callers`/`callees` используют четыре закреплённых

@@ -170,13 +170,14 @@ Malformed configuration, ownership conflicts, or drift fail closed instead of be
 overwritten. `doctor` reports active, absent, or conflicting structural ownership and
 never repairs these files implicitly.
 
-The MCP server exposes 12 task-shaped tools, including `doctor`. All tools use
+The MCP server exposes 13 task-shaped tools, including `doctor`. All tools use
 one response envelope, and health/context are also available as MCP resources.
 
-### Exact 12-tool contract
+### Exact 13-tool contract
 
-The tool count and names are unchanged. These are the implemented behaviors in the
-integrated Tasks 1-29 branch, not the broader Task 17 target:
+`manage_project` joined the twelve earlier tools with the project map (Stage 2 of
+the readable-memory spec). These are the implemented behaviors in the integrated
+Tasks 1-29 branch, not the broader Task 17 target:
 
 | Tool | Current behavior |
 |---|---|
@@ -192,6 +193,7 @@ integrated Tasks 1-29 branch, not the broader Task 17 target:
 | `find_dead_code` | Queries the active Evidence Graph first and reports source generation, graph completeness, unresolved count, and fallback. `live=true` explicitly bypasses the store. |
 | `get_architecture` | Keeps structural `summary`, `symbol`, `callers`, `callees`, `dependencies`, `path`, `community`, and `impact`; adds `search` (ranked qualified names with degree), `snippet` by `owner.name` with exact stored line ranges, `coverage` with the parse ranges the extractor could not read, `depth` on `callers`/`callees`, and `affected_symbols` on `impact` (#24, B); precise Python `definition`, `references`, `implementations`, `type`, `diagnostics`, and positioned call modes use the owned Pyright session. |
 | `doctor` | Exposes nine closed actions: `status`, queue inspect/cancel/redrive/dead-list, transaction recover/undo, archive status, and claim status. Mutation actions require `repair=true`. |
+| `manage_project` | Edits the private project map through the Markdown transaction API with six closed actions: `create` (`name`, optional `directory`), `attach` (`name`, `directory`), `detach` (`directory`), `rename` (`name`, `new_name`), `remove` (`name`), and `list`. A refused request answers with a stable `code` such as `unknown_project`, `project_exists`, `reserved_name` or `not_a_repository`. See [Registering a project](#registering-a-project). |
 
 All responses retain JSON text compatibility and the common envelope. Structured MCP
 output is used when the installed SDK supports it. The envelope's top-level
@@ -403,6 +405,43 @@ bounded incremental refresh starts in the background; the answer you get is
 from the generation the vault has, and the next answer sees the new one. The
 nightly pass refreshes every registered repository. See
 `docs/CODE-NAVIGATION.md`.
+
+### Registering a project
+
+A project is a product you are building, and it may span several repositories (a
+backend, a frontend, shared services). Only projects you register exist. Register
+one by asking the agent you are already talking to, from Claude Code, Codex or
+OpenCode alike:
+
+- "I'm starting project Product A here, add it to the memory." The agent calls
+  `manage_project` with `action=create`, `name="Product A"` and its working
+  directory, so the project is created with the current repository in it.
+- "This repository belongs to Product A." → `action=attach`. A repository that
+  already belongs to another project is moved, and the answer says from where.
+- "Detach this repository", "rename Product A to Product B", "remove Product A" →
+  `detach`, `rename`, `remove`. "Which projects do I have?" → `list`.
+
+A subfolder or a worktree registers its repository's main checkout. A directory in
+no git repository cannot join a project. Names are stored as folder-safe slugs
+(`Product A` becomes `product-a`); `general` is reserved for notes without a
+project.
+
+The registrations live in one private file, `knowledge/projects/project-map.md`,
+that you can also edit in Obsidian:
+
+```markdown
+## product-a
+
+- C:/work/backend
+- C:/work/frontend
+```
+
+Prose, blank lines, either slash and trailing slashes are fine, and edits made
+through the tool keep what you wrote around the entries. `doctor` reports the
+entries it cannot use: a duplicate project, a repository listed in two projects,
+a path that does not exist or is not a repository's main checkout, and the
+reserved name. For now the map only records the registrations; journals and work
+state do not read it yet.
 
 ### Compiling knowledge manually
 
@@ -796,6 +835,7 @@ at most 0.04 (`docs/research/2026-09-10-cross-lingual-memory-world-practice.md`)
 | `benchmark/` | CODE | Benchmark suite + report |
 | `knowledge/daily/` | KNOWLEDGE | Append-only session logs (private) |
 | `knowledge/notes/` | KNOWLEDGE | Durable OKF pages |
+| `knowledge/projects/project-map.md` | KNOWLEDGE | Private project map: registered projects and their repositories |
 | `knowledge/projects/<slug>/` | KNOWLEDGE | Append-only journal.md + projected state.md |
 | `knowledge/raw/` | KNOWLEDGE | Immutable sources |
 | `knowledge/inbox/` | KNOWLEDGE | Unprocessed staging |

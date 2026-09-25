@@ -1,4 +1,4 @@
-"""LLM-Wiki MCP Server — 12 task-shaped tools, stdio transport, 100% local.
+"""LLM-Wiki MCP Server — 13 task-shaped tools, stdio transport, 100% local.
 
 Gives AI agents (Claude Code, OpenCode, Codex) structured
 access to the knowledge vault via Model Context Protocol. No server, no cloud,
@@ -30,6 +30,7 @@ Tools (task-shaped, not entity-shaped — see repowise design):
   find_dead_code(directory)  — conservative zero-confirmed-caller candidates
   get_architecture(directory) — entry points, routes, hotspots, communities
   doctor(repair)            — local health and optional safe repairs
+  manage_project(action)    — register projects and their repositories
 """
 from __future__ import annotations
 
@@ -512,6 +513,57 @@ DOCTOR_INPUT_SCHEMA = {
     ],
 }
 
+MAX_MCP_PROJECT_NAME_LENGTH = 128
+MAX_MCP_DIRECTORY_LENGTH = 4096
+_PROJECT_FIELDS = {
+    "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_MCP_PROJECT_NAME_LENGTH,
+        "description": "Project name in the owner's words; stored as a folder-safe slug",
+    },
+    "new_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_MCP_PROJECT_NAME_LENGTH,
+        "description": "The project's new name",
+    },
+    "directory": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": MAX_MCP_DIRECTORY_LENGTH,
+        "description": (
+            "Absolute path inside the repository, usually your current working "
+            "directory; a subfolder or worktree names its main checkout"
+        ),
+    },
+}
+
+
+def _project_branch(action: str, required: tuple = (), optional: tuple = ()) -> dict:
+    properties = {"action": {"type": "string", "const": action}}
+    for key in (*required, *optional):
+        properties[key] = _PROJECT_FIELDS[key]
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["action", *required],
+        "additionalProperties": False,
+    }
+
+
+MANAGE_PROJECT_INPUT_SCHEMA = {
+    "type": "object",
+    "oneOf": [
+        _project_branch("create", ("name",), ("directory",)),
+        _project_branch("attach", ("name", "directory")),
+        _project_branch("detach", ("directory",)),
+        _project_branch("rename", ("name", "new_name")),
+        _project_branch("remove", ("name",)),
+        _project_branch("list"),
+    ],
+}
+
 # CODE-06: the two arguments that let a caller pay less for a code answer.
 # The ceiling `code_graph.DEPENDENCY_MAX_DEPTH` enforces, stated here so the
 # tool schema does not import `code_graph` at module load — that import pulls
@@ -789,6 +841,7 @@ TOOL_INPUT_SCHEMAS = {
         "required": ["directory"],
     },
     "doctor": DOCTOR_INPUT_SCHEMA,
+    "manage_project": MANAGE_PROJECT_INPUT_SCHEMA,
 }
 
 
@@ -1538,6 +1591,30 @@ def _trigger_compile(*, deadline: float | None = None) -> dict:
     # completed told the caller the opposite of what occurred.
     status = "completed" if returncode == 0 else "failed"
     return {"status": status, "returncode": returncode}
+
+
+def _manage_project(action: str, *, deadline: float | None = None, **fields) -> dict:
+    """Apply one project-map action; a refused request answers with its code."""
+    from memory_state import ROOT, STATE_ROOT
+    from project_map import ProjectMapError, manage_project
+
+    _check_deadline(deadline)
+    try:
+        return manage_project(
+            ROOT,
+            STATE_ROOT,
+            {"action": action, **fields},
+            deadline=_operation_deadline(deadline),
+            cancelled=_operation_cancelled(),
+        )
+    except ProjectMapError as error:
+        return {
+            "status": "error",
+            "action": action,
+            "code": error.code,
+            "error": str(error),
+            **error.details,
+        }
 
 
 def _dead_code_symbol_view(answer: dict, symbol: str) -> dict:
@@ -3928,6 +4005,18 @@ def _build_tool_definitions() -> list:
             description="Check local vault health. Read-only unless repair is explicitly true.",
             inputSchema=TOOL_INPUT_SCHEMAS["doctor"],
         ),
+        _make_tool(
+            name="manage_project",
+            description=(
+                "Register the owner's projects and the repositories each is made of, "
+                "in the private project map. Use when the owner says they are "
+                "starting a project here, that a repository belongs to a project, or "
+                "asks to rename, detach or remove one. Pass your current working "
+                "directory as `directory`. Attaching a repository that belongs to "
+                "another project moves it. `list` shows the map and its problems."
+            ),
+            inputSchema=TOOL_INPUT_SCHEMAS["manage_project"],
+        ),
     ]
 
 
@@ -3983,7 +4072,16 @@ def _validate_one_of(schema: dict, arguments: dict) -> str | None:
     ]
     if sum(error is None for error in errors) == 1:
         return None
-    return "arguments do not match exactly one allowed action"
+    named = _named_action_error(schema["oneOf"], errors, arguments.get("action"))
+    return named or "arguments do not match exactly one allowed action"
+
+
+def _named_action_error(branches: list, errors: list, action) -> str | None:
+    """The reason the branch the caller named refused, instead of a generic refusal."""
+    for branch, error in zip(branches, errors):
+        if branch["properties"]["action"].get("const") == action and error is not None:
+            return f"{action}: {error}"
+    return None
 
 
 def _validate_recall_arguments(arguments: dict) -> str | None:
@@ -5693,6 +5791,10 @@ def _tool_doctor(arguments: dict, deadline: float):
     return _call_with_deadline(_doctor, **arguments, deadline=deadline), False
 
 
+def _tool_manage_project(arguments: dict, deadline: float):
+    return _call_with_deadline(_manage_project, **arguments, deadline=deadline), False
+
+
 _TOOL_HANDLERS = {
     "recall": _tool_recall,
     "read_page": _tool_read_page,
@@ -5705,6 +5807,7 @@ _TOOL_HANDLERS = {
     "compile": _tool_compile,
     "find_dead_code": _tool_find_dead_code,
     "get_architecture": _tool_get_architecture,
+    "manage_project": _tool_manage_project,
 }
 
 

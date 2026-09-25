@@ -111,7 +111,7 @@ _REQUIRED_BOOTSTRAP = ("LLM_WIKI_COMMIT", "40")
 # and the per-language parity markers.
 _REQUIRED_CLAIMS = (
     "mcp",
-    "12",
+    "13",
     "doctor",
     "envelope",
     "resource",
@@ -122,19 +122,19 @@ _REQUIRED_CLAIMS = (
 _STALE_CLAIMS = ("web clipper", "zero runtime dependencies", "stdlib-only")
 _PARITY_MARKERS = {
     "README.md": (
-        "12 task-shaped",
+        "13 task-shaped",
         "full regression suite",
         "retrieval-v2.json",
         "optional Obsidian viewer",
     ),
     "README.ru.md": (
-        "12 task-shaped",
+        "13 task-shaped",
         "полный регрессионный набор",
         "retrieval-v2.json",
         "Obsidian как опциональный viewer",
     ),
     "README.zh-CN.md": (
-        "12 个 task-shaped",
+        "13 个 task-shaped",
         "完整回归套件",
         "retrieval-v2.json",
         "Obsidian 为可选 viewer",

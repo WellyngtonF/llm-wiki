@@ -243,7 +243,7 @@ def _assert_no_bundled_obsidian_files() -> None:
 def _assert_tool_count_everywhere() -> None:
     from mcp_server import TOOL_INPUT_SCHEMAS
 
-    assert len(TOOL_INPUT_SCHEMAS) == 12
+    assert len(TOOL_INPUT_SCHEMAS) == 13
     for relative_path in _TOOL_COUNT_DOCS:
         _assert_tool_count_documented(relative_path, len(TOOL_INPUT_SCHEMAS))
 

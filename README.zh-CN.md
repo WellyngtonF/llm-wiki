@@ -63,7 +63,7 @@ provider：OpenCode、Codex、Claude 和 OpenAI 可能使用云服务；Ollama �
 - **密钥脱敏**——API 密钥、令牌、长 base64 字符串在任何写入前清除
 
 ### Agent-native 接口
-- **MCP-first 访问**——12 个本地 task-shaped 工具，覆盖 recall、上下文、决策、维护、代码智能和 `doctor`
+- **MCP-first 访问**——13 个本地 task-shaped 工具，覆盖 recall、上下文、决策、维护、代码智能和 `doctor`
 - **统一 response envelope**——每个工具返回 schema version、freshness、evidence quality、warnings 和 data；MCP resources 提供 health 与 context
 - **自动健康检查**——健康时 SessionStart 保持静默，仅注入 degraded/error 结果；`doctor(repair=true)` 只执行安全、幂等的本地修复
 
@@ -328,7 +328,7 @@ BM25 门禁（112 条生成查询和 60 条冻结查询）已于 2026-09-10 随�
 
 ### MCP 智能体接口
 
-本地 stdio MCP 服务器提供 **12 个 task-shaped 工具**，包括 `doctor`，并统一使用 response envelope 和 health/context resources。`find_dead_code(directory)` 返回保守候选项，`get_architecture(directory)` 返回入口点、路由、基于 canonical symbol ID 的热点和社区。文件系统分析要求显式提供存在的非根目录，且绝不回退到进程 CWD。
+本地 stdio MCP 服务器提供 **13 个 task-shaped 工具**，包括 `doctor`，并统一使用 response envelope 和 health/context resources。`find_dead_code(directory)` 返回保守候选项，`get_architecture(directory)` 返回入口点、路由、基于 canonical symbol ID 的热点和社区。文件系统分析要求显式提供存在的非根目录，且绝不回退到进程 CWD。
 
 精确模式 `definition`、`references`、`implementations`、`type`、
 `diagnostics` 以及带位置的 `callers`/`callees` 使用四个固定的受管语言服务器：

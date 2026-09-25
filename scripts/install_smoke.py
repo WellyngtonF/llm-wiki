@@ -32,6 +32,7 @@ EXPECTED_TOOL_NAMES = (
     "find_dead_code",
     "get_architecture",
     "doctor",
+    "manage_project",
 )
 
 

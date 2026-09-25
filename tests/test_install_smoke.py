@@ -60,7 +60,7 @@ def test_run_smoke_uses_one_deadline_and_retains_degraded_evidence(
 
     assert report["status"] == "degraded"
     assert report["doctor"] == _doctor_report("degraded")
-    assert report["tool_count"] == 12
+    assert report["tool_count"] == 13
     assert observed == [("doctor", 8.0), ("mcp", 5.0)]
 
 
@@ -162,7 +162,7 @@ def test_cli_emits_one_json_object_or_bounded_failure(
     state_root = tmp_path / "state"
     root.mkdir()
     state_root.mkdir()
-    expected = {"status": "ok", "tool_count": 12}
+    expected = {"status": "ok", "tool_count": 13}
     monkeypatch.setattr(install_smoke, "run_smoke", lambda *args, **kwargs: expected)
 
     assert install_smoke.main(

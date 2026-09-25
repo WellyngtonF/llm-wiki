@@ -247,7 +247,7 @@ def test_code_navigation_python_slice_is_reported_as_current() -> None:
         "document synchronization",
         "session-manager capacity",
         "normalized navigation facade",
-        "existing 12 task-shaped MCP tools",
+        "existing 13 task-shaped MCP tools",
         "no Serena runtime dependency",
         "not written into an active generation",
         "cache/code-tools/pyright/1.1.411/",

@@ -37,7 +37,7 @@ code-graph = [
     "tree-sitter-c-sharp>=0.23,<1",
     "tree-sitter-bash>=0.23,<1",
 ]
-# v4.0: MCP server (12 task-shaped tools, stdio transport, 100% local).
+# v4.0: MCP server (13 task-shaped tools, stdio transport, 100% local).
 mcp-server = []
 # v4.0: Cross-encoder reranker (mxbai-rerank via ONNX, local CPU).
 reranker = [

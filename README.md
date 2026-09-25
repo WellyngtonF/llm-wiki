@@ -63,7 +63,7 @@ The system follows the "compile, not retrieve" pattern ([Karpathy, April 2026](h
 - **Secret redaction** — API keys, tokens, long base64 stripped before any write
 
 ### Agent-native interface
-- **MCP-first access** — 12 task-shaped local tools for recall, context, decisions, maintenance, code intelligence, and `doctor`
+- **MCP-first access** — 13 task-shaped local tools for recall, context, decisions, maintenance, code intelligence, and `doctor`
 - **Uniform response envelope** — every tool reports schema version, freshness, evidence quality, warnings, and data; MCP resources expose health and context
 - **Automatic health** — SessionStart stays quiet when healthy and injects only degraded/error findings; `doctor(repair=true)` limits repairs to safe, idempotent local actions
 
@@ -340,7 +340,7 @@ Run retrieval-v2: `uv run python benchmark/run_benchmark.py`
 
 ### MCP agent interface
 
-The local stdio MCP server exposes **12 task-shaped tools**, including `doctor`, with one response envelope and health/context resources. `find_dead_code(directory)` returns conservative candidates, while `get_architecture(directory)` reports entry points, routes, canonical-symbol hotspots, and communities. Filesystem analysis requires an explicit existing non-root directory and never falls back to the process CWD.
+The local stdio MCP server exposes **13 task-shaped tools**, including `doctor`, with one response envelope and health/context resources. `find_dead_code(directory)` returns conservative candidates, while `get_architecture(directory)` reports entry points, routes, canonical-symbol hotspots, and communities. Filesystem analysis requires an explicit existing non-root directory and never falls back to the process CWD.
 
 Precise modes `definition`, `references`, `implementations`, `type`,
 `diagnostics`, and positioned `callers`/`callees` use four pinned managed language

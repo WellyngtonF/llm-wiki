@@ -43,7 +43,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   ├── access_tracking.py           explicit telemetry promotion + decay stats
 │   ├── retrieval_telemetry.py       private bounded retrieval event cache
 │   ├── reflection.py                v4.0: A-MEM page consolidation
-│   ├── mcp_server.py                v4.0: MCP server (12 task-shaped tools, stdio)
+│   ├── mcp_server.py                v4.0: MCP server (13 task-shaped tools, stdio)
 │   ├── integration_adapter.py       v4.x: thin native lifecycle adapter
 │   ├── event_envelope.py            v4.x: shared lifecycle event contract
 │   ├── mcp_contract.py              v4.x: uniform MCP response envelope/resources
@@ -71,6 +71,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   │   ├── receipts/                v2 current; immutable v3 proposed target
 │   │   └── archive/YYYY-MM/bag-…/   immutable uncompressed BagIt packages
 │   ├── notes/                       durable OKF pages (flat slugs)
+│   ├── projects/project-map.md      private project map (registered projects)
 │   ├── projects/<slug>/             state.md projection + append-only journal.md
 │   │                                (only state.md/context.md join the corpus;
 │   │                                no slug for a directory inside the vault,
@@ -428,7 +429,7 @@ deterministic rendering, MCP routing, doctor diagnostics, and qualification gate
 
 The implemented Python/Pyright slice keeps the existing structural Evidence Graph
 and adds a Python 3.10-compatible, read-only LSP runtime owned by LLM Wiki. It serves
-precise live navigation through modes of the existing 12 task-shaped MCP tools. It
+precise live navigation through modes of the existing 13 task-shaped MCP tools. It
 adds no Serena runtime dependency, Rust rewrite, second graph, catalog, active
 pointer, runtime root, persistent daemon, semantic result cache, or MCP tool.
 Query-time LSP observations are not written into an active generation.
@@ -531,7 +532,7 @@ or nonzero active state remains fail-closed.
   VERIFY-BEFORE-WRITE), `flush_memory.py` (3-tier classification),
   `maybe_compile.py` (PID-locked spawn), `search_memory.py` (entry point; fusion lives in `retrieval.py`),
   `llm_client.py` (5 backends + fake), `integration_adapter.py` (thin host
-  lifecycle boundary), `mcp_server.py` (12 task-shaped tools), and `doctor.py`.
+  lifecycle boundary), `mcp_server.py` (13 task-shaped tools), and `doctor.py`.
 - `tests/` — full regression suite. Hermetic via `conftest.py` (pins
   `LLM_WIKI_ROOT` to checkout, redirects `LLM_WIKI_STATE_ROOT` to a temp
   dir, defaults `MEMORY_LLM_PROVIDER=fake`).
@@ -588,6 +589,21 @@ or nonzero active state remains fail-closed.
   `context.md` is written on request by
   `uv run python scripts/build_context.py --slug <name> --write`; see
   `docs/research/2026-09-18-the-project-context-page-gets-its-command-back.md`.
+- `knowledge/projects/project-map.md` — the project map (ADR 0002): the projects
+  the owner registered and the repositories each is made of. Private: it falls
+  under the `knowledge/projects/*` denial in `.gitignore`, and nothing is added to
+  the allowlist. Frontmatter `type: project-context`, then one `## <project>`
+  heading per project, each followed by `- <main checkout path>` bullets. A
+  project name is the owner's words as a folder-safe slug; `general` is reserved
+  for notes without a project. The parser (`scripts/project_map.py`) tolerates
+  hand edits in Obsidian: prose, blank lines, other headings, backticks, either
+  slash, trailing slashes, and case on Windows. The `manage_project` MCP tool
+  edits it with line edits through the Markdown transaction API (create, attach,
+  detach, rename, remove, list); attaching a repository that belongs to another
+  project moves it. Doctor's `projects` check reports duplicate projects, a
+  repository in two projects, paths that do not exist or are not a main checkout,
+  and reserved or unusable names. Lookups ask `ProjectMap.project_of(<main
+  checkout>)`; journals and work state do not read the map yet (issue #14).
 - `knowledge/daily/archive/YYYY-MM/bag-<timestamp>-<id>/` — private immutable,
   uncompressed BagIt-style daily-log bags and
   a derived archive index. Archive means move, never delete; evidence resolves by

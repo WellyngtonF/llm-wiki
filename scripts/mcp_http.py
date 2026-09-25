@@ -6,7 +6,7 @@ costs 7.99 s and ~1.1 GiB resident per process (`knowledge/log.md`,
 2026-08-26). One resident server pays that once and every agent shares it.
 
 What this is not. It is a *transport*, not a capability. The tool surface is
-the same twelve tools, reached through `mcp_server.build_server()` - the same
+the same thirteen tools, reached through `mcp_server.build_server()` - the same
 `_validate_tool_arguments`, the same operation deadline, the same envelope.
 Nothing here dispatches a tool itself.
 
