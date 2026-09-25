@@ -95,9 +95,9 @@ def _many_sessions(vault: Path, count: int = 48) -> Path:
 
 
 def _existing_notes(vault: Path, count: int = 40) -> None:
-    """Enough notes that their list alone costs the prompt about 5 KB."""
+    """Enough notes that their catalog alone costs the prompt about 7 KB."""
     for index in range(count):
-        slug = f"note-alpha-{index:03d}-" + "backend-queue-lease-" * 5
+        slug = f"note-alpha-{index:03d}-" + "-".join(["backend-queue-lease"] * 5)
         (vault / "knowledge" / "notes" / f"{slug}.md").write_text(
             f"---\ntype: concept\n---\n# Note {index}\n", encoding="utf-8"
         )
@@ -177,7 +177,7 @@ def _receipt_sizes(vault: Path) -> list[int]:
 
 
 def test_pieces_are_cut_to_the_room_the_fixed_prompt_leaves(vault: Path, monkeypatch) -> None:
-    """16 KiB pieces no longer fit once the note list is counted; smaller ones do.
+    """16 KiB pieces no longer fit once the note catalog is counted; smaller ones do.
 
     Their receipts then prove the day at any window, and once the day grows a
     wider window takes only what no receipt covers yet.

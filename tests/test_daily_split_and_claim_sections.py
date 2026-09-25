@@ -49,8 +49,8 @@ def test_draft_knows_existing_targets_even_when_optional_context_is_omitted():
     target = compiler.TargetSnapshot("knowledge/notes/existing-rule.md", b"old rule", sha256_bytes(b"old rule"))
     inputs = compiler.CompileInputs((), (), (target,))
     prompt = compiler._draft_prompt(inputs)
-    assert "knowledge/notes/existing-rule.md" in prompt
-    assert "Never create a listed path" in prompt
+    assert '{"slug":"existing-rule","title":"existing-rule"}' in prompt
+    assert "Never create a slug for a topic a catalog entry already covers" in prompt
 
 
 def test_every_receipted_daily_part_is_visible_to_the_draft(tmp_path, monkeypatch):

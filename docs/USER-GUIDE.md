@@ -419,6 +419,15 @@ Compile runs automatically on MAJOR sessions after the hour cutoff, but you
 can trigger it manually anytime. The pipeline uses VERIFY-BEFORE-WRITE —
 the LLM cannot fabricate citations.
 
+The writer and the reviewer both read a catalog of every live note: one line
+per note with its slug, title, one-sentence summary, type, and its `project:`
+and `tags:` when the note has them. Superseded, archived and other retired
+notes are left out. With it the model reuses an existing slug for a topic a
+note already covers, and the reviewer drops a new note that repeats one. An
+update adds a dated section to the note and never renames it: a slug, once
+written, stays. Each summary is cut to 160 characters in the catalog; the note
+itself is not changed.
+
 The links the model proposes for a note, on create and on update, are kept only
 when they name a live note (not superseded or otherwise retired) or a note created
 in the same compile. They are written as bare `[[slug]]`; a path-style
@@ -434,8 +443,13 @@ dropped, and the compile's line in `knowledge/log.local.md` names it:
 of your model is, in tokens. The default is `32768`. Set it to the window of
 the model your compile provider uses (for example `MEMORY_CODEX_MODEL`). Each
 run keeps 4,000 tokens for the answer and 1,024 of slack. It then measures the
-fixed prompt: system text, schema, instructions, and the list of existing
-notes. What is left is the room for daily-log text.
+fixed prompt: system text, schema, instructions, and the note catalog. What is
+left is the room for daily-log text.
+
+The catalog grows with the vault, by roughly 300 estimated tokens per live
+note. It is never cut to fit: when the catalog and the instructions alone fill
+the window, the compile refuses the run and names
+`MEMORY_COMPILE_CONTEXT_TOKENS`, and every day stays pending until you raise it.
 
 A long daily log is cut into pieces at entry boundaries: first 16 KiB, then
 8, 4 and 2 KiB until each piece fits that room. Several pieces share one model
