@@ -369,7 +369,7 @@ class TestGraphImpact:
         assert result["warnings"]
 
 
-def test_mcp_exposes_impact_as_get_architecture_mode_without_a_thirteenth_tool(monkeypatch):
+def test_mcp_exposes_impact_as_get_architecture_mode_without_a_tool_of_its_own(monkeypatch):
     import asyncio
     import json
 
@@ -379,7 +379,8 @@ def test_mcp_exposes_impact_as_get_architecture_mode_without_a_thirteenth_tool(m
     monkeypatch.setattr(mcp_server, "_analyze_impact", lambda **kwargs: expected)
 
     schema = mcp_server.TOOL_INPUT_SCHEMAS["get_architecture"]
-    assert ("mode" in schema["properties"], len(mcp_server.TOOL_INPUT_SCHEMAS)) == (True, 12)
+    assert "mode" in schema["properties"]
+    assert not any("impact" in name for name in mcp_server.TOOL_INPUT_SCHEMAS)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     response = json.loads(loop.run_until_complete(mcp_server._handle_tool_call(

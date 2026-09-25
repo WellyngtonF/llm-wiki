@@ -295,7 +295,7 @@
       "question": "Where is the constant EDITORIAL_NAMES defined?",
       "gold": {
         "citations": [
-          "scripts/vault_editorial.py:43 (EDITORIAL_NAMES: frozenset[str] = frozenset({...}))"
+          "scripts/vault_editorial.py:40 (EDITORIAL_NAMES: frozenset[str] = frozenset({...}))"
         ],
         "must": [
           "vault_editorial"
