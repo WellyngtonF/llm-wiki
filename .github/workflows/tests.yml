@@ -55,7 +55,7 @@ jobs:
       - run: uv sync --locked --python 3.14
       - run: uv run --locked --no-sync ruff check scripts/ tests/ benchmark/
       - run: uv run --locked --no-sync python -m compileall -q -x "tests[\\/]fixtures[\\/]code_kernel[\\/]python[\\/]pkg[\\/]broken[.]py" scripts tests benchmark
-      - run: uv run --locked --no-sync python scripts/lint_memory.py --scope all --fail-on-findings --allowed-categories orphan_daily_logs missing_backlinks missing_sources_section temporal_validity
+      - run: uv run --locked --no-sync python scripts/lint_memory.py --scope all --fail-on-findings --allowed-categories orphan_daily_logs missing_sources_section temporal_validity
       - run: node --check scripts/llm-wiki-memory-opencode.js
       - run: bash -n install.sh
       # Nothing parsed PowerShell and nothing ran shellcheck: a syntax error in

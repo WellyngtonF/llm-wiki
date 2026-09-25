@@ -184,9 +184,9 @@ def committed_content_times(root: Path) -> dict[str, float]:
 
     This exists because `st_mtime` answers "when was this file last written",
     which on this vault is not "when did this page last change": a checkout, an
-    index rebuild or the nightly backlink writer rewrites bytes that are
-    already identical, and every such touch used to restart the forgetting
-    clock. Measured 2026-08-28 — 53 of 76 tracked notes carried an mtime more
+    index rebuild or (until 2026-09-24) the nightly backlink writer rewrites
+    bytes that are already identical, and every such touch used to restart the
+    forgetting clock. Measured 2026-08-28 — 53 of 76 tracked notes carried an mtime more
     than a day newer than their last content change while byte-identical to
     HEAD, the largest gap 38 days.
     """

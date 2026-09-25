@@ -61,7 +61,7 @@ INDEX_HEADER = (
     "(OpenCode, Codex, Claude Code).",
     "",
     "## Entry points",
-    "- [[docs/operating-model]] — compile cadence, promotion rules, and the daily ↔ notes boundary.",
+    "- `docs/operating-model.md` — compile cadence, promotion rules, and the daily ↔ notes boundary.",
     "- Recent daily logs live under `knowledge/daily/` — raw, timestamped session captures awaiting compile.",
     "",
 )
@@ -270,7 +270,8 @@ def _section_of(text: str) -> str:
 
 
 def _index_link(relative: str) -> str:
-    return str(Path(relative).with_suffix("")).replace("\\", "/")
+    """A bare `[[slug]]`, which Obsidian resolves from anywhere in the vault."""
+    return Path(relative).stem
 
 
 def _summary_of(text: str) -> str:

@@ -1,15 +1,17 @@
 """Resolve content-addressed daily evidence from flat files or sealed bags."""
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import os
 import re
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from bounded_io import read_stable_bytes
 from reliable_memory import canonical_json_bytes, sha256_bytes, validate_schema
@@ -991,6 +993,140 @@ def _daily_part_bounds(content: bytes) -> list[tuple[int, int]]:
     return bounds
 
 
+# A piece the compile cannot take whole is cut again, at the next rung of a
+# fixed ladder of sizes that halves from `MAX_DAILY_PART_BYTES` down to this
+# floor. How deep a piece goes is decided per run, from the room the context
+# window leaves beside the fixed prompt; the ladder never moves, so every
+# reader walks the same tree, and a piece committed at any depth still proves
+# its bytes compiled at any window. Issue #2 of the readable-memory spec.
+MIN_DAILY_PIECE_BYTES = 2 * 1024
+
+_CAPTURE_HEADING = re.compile(rb"(?m)^## \[\d{2}:\d{2}:\d{2}\]")
+
+
+class DailyPiece(NamedTuple):
+    """One node of a day's piece tree: a byte range and the rung it was cut at."""
+
+    start: int
+    end: int
+    level: int = 0
+    index: int = 0
+    count: int = 1
+
+
+def _rung_bytes(level: int) -> int:
+    return MAX_DAILY_PART_BYTES >> level
+
+
+def _greedy_bounds(length: int, starts: list[int], size: int) -> list[tuple[int, int]]:
+    offsets = [0, *starts, length]
+    bounds: list[tuple[int, int]] = []
+    cursor = 0
+    for index in range(1, len(offsets)):
+        if offsets[index] - cursor > size and offsets[index - 1] > cursor:
+            bounds.append((cursor, offsets[index - 1]))
+            cursor = offsets[index - 1]
+    bounds.append((cursor, length))
+    return bounds
+
+
+def _piece_cut_points(content: bytes) -> list[int]:
+    """Where an entry of either kind begins; 0 first, as the day's own start."""
+    return sorted(
+        {*_daily_entry_offsets(content), *(m.start() for m in _CAPTURE_HEADING.finditer(content))}
+    )
+
+
+def split_daily_piece(piece: bytes, level: int) -> tuple[int, list[tuple[int, int]]] | None:
+    """The next finer cut of one piece: the rung it lands on and its parts.
+
+    Offsets are relative to the piece and fall where an entry of either kind
+    begins. None when no rung below `level` cuts it: it is small already, or it
+    is one entry with nothing inside to cut at.
+    """
+    starts = _piece_cut_points(piece)[1:]
+    level += 1
+    while _rung_bytes(level) >= MIN_DAILY_PIECE_BYTES:
+        bounds = _greedy_bounds(len(piece), starts, _rung_bytes(level))
+        if len(bounds) > 1:
+            return level, bounds
+        level += 1
+    return None
+
+
+def daily_piece_children(content: bytes, piece: DailyPiece) -> list[DailyPiece]:
+    split = split_daily_piece(content[piece.start : piece.end], piece.level)
+    if split is None:
+        return []
+    level, bounds = split
+    return [
+        DailyPiece(piece.start + start, piece.start + end, level, index, len(bounds))
+        for index, (start, end) in enumerate(bounds)
+    ]
+
+
+def _daily_top_pieces(content: bytes) -> list[DailyPiece]:
+    bounds = _daily_part_bounds(content)
+    return [
+        DailyPiece(start, end, 0, index, len(bounds))
+        for index, (start, end) in enumerate(bounds)
+    ]
+
+
+def daily_piece_tree(content: bytes) -> list[DailyPiece]:
+    """Every piece this day can be compiled as, at every rung, parents first."""
+    nodes: list[DailyPiece] = []
+    frontier = _daily_top_pieces(content)
+    while frontier:
+        nodes.extend(frontier)
+        frontier = [child for piece in frontier for child in daily_piece_children(content, piece)]
+    return nodes
+
+
+def _piece_compiled(content: bytes, piece: DailyPiece, receipted: Callable[[bytes], bool]) -> bool:
+    if receipted(content[piece.start : piece.end]):
+        return True
+    children = daily_piece_children(content, piece)
+    return bool(children) and all(
+        _piece_compiled(content, child, receipted) for child in children
+    )
+
+
+def daily_pieces_compiled(content: bytes, receipted: Callable[[bytes], bool]) -> bool:
+    """Whether receipts cover every byte of this day, at whatever rung each was cut."""
+    return all(
+        _piece_compiled(content, piece, receipted) for piece in _daily_top_pieces(content)
+    )
+
+
+def _pending_below(
+    content: bytes, piece: DailyPiece, receipted: Callable[[bytes], bool]
+) -> list[DailyPiece]:
+    if receipted(content[piece.start : piece.end]):
+        return []
+    children = daily_piece_children(content, piece)
+    pending = [_pending_below(content, child, receipted) for child in children]
+    if all(found == [child] for found, child in zip(pending, children)):
+        return [piece]
+    return [item for found in pending for item in found]
+
+
+def pending_daily_pieces(
+    content: bytes, receipted: Callable[[bytes], bool]
+) -> list[DailyPiece]:
+    """The coarsest pieces of this day that hold no compiled bytes.
+
+    A piece is offered whole unless some piece inside it already carries a
+    receipt; then only its uncompiled parts are offered, so a run at another
+    window does not compile again what a smaller piece already committed.
+    """
+    return [
+        item
+        for piece in _daily_top_pieces(content)
+        for item in _pending_below(content, piece, receipted)
+    ]
+
+
 def _entry_ends(content: bytes, offset: int) -> range:
     """Where a slice that stops before this entry could have ended.
 
@@ -1027,27 +1163,63 @@ def _slice_offsets(content: bytes) -> list[int]:
     return sorted(offsets)
 
 
-def _slice_boundaries(content: bytes, start: int) -> list[int]:
+def _slice_boundaries(
+    content: bytes,
+    start: int,
+    *,
+    offsets: list[int] | None = None,
+    stop: int | None = None,
+) -> list[int]:
     """Where a historical slice beginning at `start` could have ended.
 
     The end of the file is always a candidate, even when a day carries more
     entries than the scan is allowed to try: the whole tail is the one slice a
-    compile part is most likely to have been.
+    compile part is most likely to have been. A `stop` bounds the scan for a
+    piece known to be short, and the end of the file then counts only inside it.
 
     Sorted and deduplicated because `_slice_from` hashes forward from one
     candidate to the next and needs them ascending.
     """
     ends: set[int] = set()
-    for offset in _slice_offsets(content):
-        if offset > start:
+    for offset in _slice_offsets(content) if offsets is None else offsets:
+        if offset > start and (stop is None or offset <= stop):
             ends.update(end for end in _entry_ends(content, offset) if end > start)
-    return [*sorted(ends)[: MAX_EVIDENCE_SLICE_CANDIDATES - 1], len(content)]
+    ends.discard(len(content))
+    tail = [len(content)] if stop is None or len(content) <= stop else []
+    return [*sorted(ends)[: MAX_EVIDENCE_SLICE_CANDIDATES - 1], *tail]
 
 
-def _slice_from(content: bytes, start: int, digest: str) -> bytes | None:
+def _finer_piece_scans(content: bytes, skip: set[int]) -> list[tuple[int, int]]:
+    """Where a piece cut below the top rung starts, and where its scan may stop.
+
+    Such a piece is at most its rung long, or is one entry: it ends by the
+    first entry start after it at the latest. Bounding the scan keeps a day of
+    many small pieces as cheap to resolve as a day of few large ones.
+    """
+    cuts = _piece_cut_points(content)
+    longest: dict[int, int] = {}
+    for piece in daily_piece_tree(content):
+        if piece.level and piece.start not in skip:
+            longest[piece.start] = max(longest.get(piece.start, 0), _rung_bytes(piece.level))
+    scans: list[tuple[int, int]] = []
+    for start in sorted(longest):
+        after = bisect.bisect_right(cuts, start)
+        following = cuts[after] if after < len(cuts) else len(content)
+        scans.append((start, max(start + longest[start], following)))
+    return scans
+
+
+def _slice_from(
+    content: bytes,
+    start: int,
+    digest: str,
+    *,
+    offsets: list[int] | None = None,
+    stop: int | None = None,
+) -> bytes | None:
     running = hashlib.sha256()
     cursor = start
-    for boundary in _slice_boundaries(content, start):
+    for boundary in _slice_boundaries(content, start, offsets=offsets, stop=stop):
         running.update(content[cursor:boundary])
         cursor = boundary
         if running.hexdigest() == digest:
@@ -1074,6 +1246,11 @@ def compile_part_slice(content: bytes, digest: str) -> bytes | None:
     )})
     for start in starts:
         found = _slice_from(content, start, digest)
+        if found is not None:
+            return found
+    offsets = _slice_offsets(content)
+    for start, stop in _finer_piece_scans(content, set(starts)):
+        found = _slice_from(content, start, digest, offsets=offsets, stop=stop)
         if found is not None:
             return found
     return None

@@ -19,7 +19,6 @@ Procedure:
    - orphan knowledge pages (not referenced from the relevant `index.md`)
    - orphan daily logs (not yet compiled)
    - stale compiled pages (daily hash drifted after last compile)
-   - missing backlinks between related pages
    - sparse pages (under 200 words by default; configurable via `--sparse-words`)
    - opt-in LLM-judged contradictions via `--contradictions`
 

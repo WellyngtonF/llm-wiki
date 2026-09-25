@@ -176,9 +176,11 @@ def _require_text(value: object, message: str) -> None:
 
 
 def _source_manifest(sources: tuple[SourceDescriptor, ...]) -> list[list[object]]:
+    # One path may name several pieces of one long day, each with its own bytes,
+    # when a wide context window lets them share a batch (issue #2).
     source_manifest = sorted(source.canonical() for source in sources)
-    paths = [source[0] for source in source_manifest]
-    if len(paths) != len(set(paths)):
+    identities = [(source[0], source[2]) for source in source_manifest]
+    if len(identities) != len(set(identities)):
         raise ValueError("source logical paths must be unique")
     return source_manifest
 

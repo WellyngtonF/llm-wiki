@@ -166,13 +166,47 @@ def _runs_after_with_apply(label: str, earlier: str, script: str) -> tuple[bool,
     return labels.index(label) > labels.index(earlier), applied, command[1].endswith(script)
 
 
-def test_the_nightly_pass_pays_the_backlinks_the_vault_owes():
-    """The repair only helps if the pass that runs unattended actually calls it."""
-    assert _runs_after_with_apply("backlinks", "lint", "repair_backlinks.py") == (
-        True,
-        "--apply",
-        True,
-    )
+# The step that reads the links between notes runs for real in the night
+# below; the rest reach outside a temporary vault and are stubbed.
+_LINK_STEP_SCRIPTS = ("lint_memory.py",)
+_ONE_WAY_LINK_NOTES = {
+    "alpha.md": "---\ntype: concept\n---\n# Alpha\n\nAlpha builds on [[beta]].\n",
+    "beta.md": "---\ntype: concept\n---\n# Beta\n\nBeta names nothing.\n",
+}
+
+
+def _link_steps_real(fake: Path):
+    scripts = Path(__file__).resolve().parent.parent / "scripts"
+
+    def script(name: str) -> list[str]:
+        if name in _LINK_STEP_SCRIPTS:
+            return [sys.executable, str(scripts / name)]
+        return [sys.executable, str(fake), name]
+
+    return script
+
+
+def test_a_nightly_pass_writes_no_backlink_into_any_note(tmp_path, monkeypatch):
+    """ADR 0003: Obsidian derives backlinks, so the night never writes one."""
+    import scheduled_nightly
+
+    vault = tmp_path / "vault"
+    notes = vault / "knowledge" / "notes"
+    notes.mkdir(parents=True)
+    for name, text in _ONE_WAY_LINK_NOTES.items():
+        (notes / name).write_text(text, encoding="utf-8")
+    monkeypatch.setenv("LLM_WIKI_ROOT", str(vault))
+    monkeypatch.setenv("LLM_WIKI_STATE_ROOT", str(tmp_path / "state"))
+    _redirected_night(tmp_path, monkeypatch)
+    _stub_checkout_steps(monkeypatch)
+    fake = tmp_path / "step.py"
+    fake.write_text("import sys\nprint('ok', sys.argv[1])\n", encoding="utf-8")
+    monkeypatch.setattr(scheduled_nightly, "_script", _link_steps_real(fake))
+
+    scheduled_nightly._run_nightly_body(ownership=None)
+
+    after = {name: (notes / name).read_text(encoding="utf-8") for name in _ONE_WAY_LINK_NOTES}
+    assert after == _ONE_WAY_LINK_NOTES
 
 
 @pytest.mark.parametrize("status", ["deferred", "error"])
@@ -324,7 +358,7 @@ def test_a_compile_still_running_defers_the_pass_without_counting_a_failure(monk
 
 def test_the_nightly_pass_prunes_superseded_generations_after_the_index():
     """Issue #29: five generations, 1.05 GB, accumulated in one day with nothing removing them."""
-    assert _runs_after_with_apply("prune_generations", "backlinks", "prune_generations.py") == (
+    assert _runs_after_with_apply("prune_generations", "lint", "prune_generations.py") == (
         True,
         "--apply",
         True,
@@ -448,7 +482,7 @@ def test_a_night_with_one_failing_step_names_it_and_records_the_failure(tmp_path
 _EXPECTED_REPORT_LINES = (
     "  lint: lint: 3 pages without frontmatter",
     "  lint: full output → logs/maintenance/",
-    "  backlinks: ok repair_backlinks.py",
+    "  checkpoints: ok repair_orphaned_checkpoint_names.py",
     "=== Nightly pass complete (failures=1) ===",
 )
 

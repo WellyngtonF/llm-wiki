@@ -340,7 +340,7 @@ END OF SESSION (agent idle or you close)
 
 NIGHTLY 03:00 (scheduler, subject to the operating-system login policy)
   Drain deferred queue → consolidate yesterday's session records into the daily
-  log → compile all pending → structural lint → add owed backlinks → rebuild the
+  log → compile all pending → structural lint → rebuild the
   FTS index → refresh the immutable evidence generation (and its vectors) →
   fetch any missing pinned model weights → compact retrieval telemetry →
   prune old reports → fast-forward the checkout
@@ -513,10 +513,81 @@ Compile runs automatically on MAJOR sessions after the hour cutoff, but you
 can trigger it manually anytime. The pipeline uses VERIFY-BEFORE-WRITE —
 the LLM cannot fabricate citations.
 
+The writer and the reviewer both read a catalog of every live note: one line
+per note with its slug, title, one-sentence summary, type, and its `project:`
+and `tags:` when the note has them. Superseded, archived and other retired
+notes are left out. With it the model reuses an existing slug for a topic a
+note already covers, and the reviewer drops a new note that repeats one. An
+update adds a dated section to the note and never renames it: a slug, once
+written, stays. Each summary is cut to 160 characters in the catalog; the note
+itself is not changed.
+
+The links the model proposes for a note, on create and on update, are kept only
+when they name a live note (not superseded or otherwise retired) or a note created
+in the same compile. They are written as bare `[[slug]]`; a path-style
+`[[knowledge/notes/x]]` or `[[notes/x]]` becomes `[[x]]`. A note never links to
+itself. An update adds its new links to the note's `## Related` section, opening
+one above the `## Claims` ledger if the note has none. Every other link is
+dropped, and the compile's line in `knowledge/log.local.md` names it:
+`Dropped links: [[x]] (from slug-a).`
+
+### Compile context window
+
+`MEMORY_COMPILE_CONTEXT_TOKENS` tells the compile how large the context window
+of your model is, in tokens. The default is `32768`. Set it to the window of
+the model your compile provider uses (for example `MEMORY_CODEX_MODEL`). Each
+run keeps 4,000 tokens for the answer and 1,024 of slack. It then measures the
+fixed prompt: system text, schema, instructions, and the note catalog. What is
+left is the room for daily-log text.
+
+The catalog grows with the vault, by roughly 300 estimated tokens per live
+note. It is never cut to fit: when the catalog and the instructions alone fill
+the window, the compile refuses the run and names
+`MEMORY_COMPILE_CONTEXT_TOKENS`, and every day stays pending until you raise it.
+
+A long daily log is cut into pieces at entry boundaries: first 16 KiB, then
+8, 4 and 2 KiB until each piece fits that room. Several pieces share one model
+call when the window is large enough. Every committed piece gets its own receipt.
+So a day stays compiled when you change the window, and a day that grows later
+only sends its new entries.
+
+A single entry too large for the window is deferred, not lost. The compile
+prints `compile_memory: deferred <file> bytes <start>-<end>` with the window
+that entry needs, and skips it for this run. It gets no receipt, so its day
+stays pending and every compile retries it. Every other piece and day still
+compiles in the same run. `doctor` names the deferred piece in its capture
+check, with the file, its size and the value to give
+`MEMORY_COMPILE_CONTEXT_TOKENS`. It is informational: it never counts as a lost
+capture, and the entry disappears once a compile takes the piece.
+
+The size is estimated as one token per UTF-8 byte. That over-counts English
+text about three to four times, so the window's full size is a safe value.
+A value that is not a whole number above 5,024 refuses the compile and names the
+variable. It never falls back to the default without telling you.
+
+The installers persist this variable next to the provider choice. The
+scheduled nightly then uses it too. Set it in the shell you install from, then
+rerun the installer:
+
+```bash
+export MEMORY_COMPILE_CONTEXT_TOKENS=272000
+bash ./install.sh
+```
+
+```powershell
+$env:MEMORY_COMPILE_CONTEXT_TOKENS = "272000"
+.\install.ps1
+```
+
+On Windows the installer writes it to your user environment, and Task Scheduler
+passes it to `LLMWiki-Nightly`. Agent sessions started after the install pick it
+up too. A compile with work to do prints the window it used:
+`compile_memory: N piece(s) in M batch(es) at a 272000-token context window.`
+
 ### Linting and maintenance
 
 ```bash
-uv run python scripts/lint_memory.py --scope all           # 16 structural checks
+uv run python scripts/lint_memory.py --scope all           # 15 structural checks
 uv run python scripts/lint_memory.py --contradictions      # + LLM-judged contradictions
 uv run python scripts/archive_stale.py --apply           # archive old pages by type
 uv run python scripts/lookup_mode.py                       # show direct/base/hybrid mode
@@ -531,6 +602,32 @@ project, written to `knowledge/projects/<project>/context.md`:
 uv run python scripts/build_context.py my-project           # print it
 uv run python scripts/build_context.py my-project --write   # write the page
 ```
+
+### Migrating existing links for Obsidian (one-off)
+
+Notes written before bare links carry `- [[knowledge/notes/x]] — links to this page.`
+lines and repository-rooted `[[knowledge/notes/x]]` links, which Obsidian (rooted at
+`knowledge/`) cannot open. One command migrates them:
+
+```bash
+uv run --locked --no-sync python scripts/migrate_links.py           # dry run: lists every change
+uv run --locked --no-sync python scripts/migrate_links.py --apply   # write them
+uv run --locked --no-sync python scripts/migrate_links.py --json    # the report as JSON
+```
+
+It removes the backlink lines (and a `## Related` heading left empty by that), and
+rewrites `[[knowledge/notes/x]]`, with or without `.md`, `|alias` or `#heading`, to a
+bare `[[x]]`, and any other `[[knowledge/<path>]]` to `[[<path>]]`. A link is rewritten
+only when its new form opens the file the old one named; when a shallower file of the
+same name exists, the note keeps a `[[notes/x]]` path. Every link that still resolves
+to nothing is listed as `UNRESOLVED` and left as it is — fix those by hand. It reads
+`knowledge/notes`, `knowledge/projects`, `knowledge/inbox` and `knowledge/feedback`;
+daily logs, `knowledge/raw/`, editorial pages and project journals are not touched, nor
+are the `## Claims` ledger, `## Evidence` lines, code fences and inline code.
+
+The dry run writes nothing. `--apply` writes every changed page in one recoverable
+transaction and prints its id; `scripts/markdown_transaction.py undo <id>` reverts the
+whole migration within the 2-day undo window. Running `--apply` again changes nothing.
 
 ### Bounded synchronization
 

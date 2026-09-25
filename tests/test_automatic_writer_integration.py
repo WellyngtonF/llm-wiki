@@ -1292,7 +1292,7 @@ def _race_changes_a_page(notes: Path) -> None:
 
 # race -> (what happens under the writer, texts the index must name, texts it must not)
 _TREE_RACES = {
-    "add": (_race_adds_a_page, ("[[knowledge/notes/added]]", "added summary"), ()),
+    "add": (_race_adds_a_page, ("[[added]]", "added summary"), ()),
     "delete": (_race_deletes_a_page, (), ("victim", "delete me")),
     "change": (_race_changes_a_page, ("fresh summary",), ("old summary",)),
 }
