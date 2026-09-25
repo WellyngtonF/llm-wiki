@@ -323,10 +323,15 @@ writes to it. See `docs/research/2026-09-14-the-vault-log-is-private.md`.
   allowlist is wrong. Fix `.gitignore`, do not commit the page.
 
 ### When asked to "work on the memory system"
-- "Improve the system" → edit code, run tests, commit, push to the fork
-  `WellyngtonF/llm-wiki`, not upstream `Ekgardt/llm-wiki` (ADR 0001).
-- "Show me my memory / what do I know about X" → read the vault: the same
-  directory, in `knowledge/` and the runtime databases.
+- "Improve the system" → work in the development clone, never in the
+  installed vault (ADR 0005): edit code, run tests, commit, push to the fork
+  `WellyngtonF/llm-wiki`, not upstream `Ekgardt/llm-wiki` (ADR 0001). The
+  vault's nightly fast-forward deploys it; nobody commits or edits code in the
+  vault checkout. In the clone, `$LLM_WIKI_ROOT` still names the vault, so a
+  script run by hand acts on the real memory; the tests are hermetic. Never run
+  the installer from the clone.
+- "Show me my memory / what do I know about X" → read the vault, in
+  `knowledge/` and the runtime databases.
 
 ---
 

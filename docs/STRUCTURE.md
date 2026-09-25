@@ -166,6 +166,16 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 | `$MEMORY_LLM_PROVIDER` | Auto-detected (`opencode` → `codex` → `claude` → `openai` → `ollama`) | LLM backend for compile/flush/query. `fake` for tests. |
 | `$LLM_WIKI_DLP_POLICY` | Unset | Optional absolute path to an external bounded-literal/fingerprint policy. Invalid or digest-mismatched required policy fails closed. |
 
+### Development clone (ADR 0005)
+
+The product is developed in a second clone of the fork, outside the vault and
+registered as a project. The vault checkout only follows the fork's `main`
+through the nightly fast-forward; nobody commits or edits code in it. The
+variables above keep naming the vault, so a script run by hand from the clone
+acts on the installed vault, while the test suite stays hermetic. The installer
+runs only in the vault; a change to hooks, scheduled tasks or dependencies
+reaches it when the installer is run there again.
+
 ## External integration configuration preimages
 
 Claude and Codex configuration merges may create byte-exact sibling preimages
