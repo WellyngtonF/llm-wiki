@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
@@ -438,6 +439,70 @@ def capture_deferred_totals(state: dict) -> dict[str, int]:
         for kind, entry in _counter_entries(state).items()
     }
     return {kind: count for kind, count in totals.items() if count}
+
+
+# A daily-log piece too large for the compile window is not a capture that
+# failed: the day stays on disk without a receipt and every compile offers it
+# again. It is kept apart from the loss counters, one entry per piece, so a
+# piece deferred every night is one entry with a run count, never a loss.
+DEFERRED_PIECES_KEY = "compile_deferred_pieces"
+MAX_DEFERRED_PIECES = 32
+
+
+def record_deferred_pieces(
+    considered_paths: Iterable[str], pieces: Sequence[Mapping[str, object]]
+) -> None:
+    """Rewrite what is deferred of the days one compile read. Never raises.
+
+    A piece is known by its day and digest: seen again, it keeps its first
+    moment and counts the run. An entry of a day this compile read and did not
+    defer again has compiled, and goes.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    considered = set(considered_paths)
+
+    def mutate(state: dict) -> None:
+        previous = _deferred_entries(state)
+        entries = {
+            key: entry for key, entry in previous.items() if entry.get("path") not in considered
+        }
+        for piece in pieces:
+            key = f"{piece['path']}@{piece['sha256']}"
+            seen = previous.get(key, {})
+            entries[key] = {
+                **piece,
+                "outcome": "deferred",
+                "reason": "oversized",
+                "first_at": seen.get("first_at", now),
+                "last_at": now,
+                "runs": int(seen.get("runs", 0)) + 1,
+            }
+        if not entries:
+            state.pop(DEFERRED_PIECES_KEY, None)
+            return
+        newest = sorted(entries.items(), key=lambda kv: str(kv[1].get("last_at", "")))
+        state[DEFERRED_PIECES_KEY] = dict(newest[-MAX_DEFERRED_PIECES:])
+
+    try:
+        update_state(mutate)
+    except Exception:  # noqa: BLE001 - the compile's own output still names the piece
+        pass
+
+
+def _deferred_entries(state: dict) -> dict[str, dict]:
+    entries = state.get(DEFERRED_PIECES_KEY)
+    if not isinstance(entries, dict):
+        return {}
+    return {key: entry for key, entry in entries.items() if isinstance(entry, dict)}
+
+
+def deferred_compile_pieces(state: dict) -> list[dict]:
+    """Every piece a compile set aside as oversized, by day and position."""
+    def position(entry: dict) -> tuple[str, int]:
+        start = entry.get("byte_start")
+        return str(entry.get("path", "")), start if isinstance(start, int) else 0
+
+    return sorted(_deferred_entries(state).values(), key=position)
 
 
 def _trail_pointer() -> str:

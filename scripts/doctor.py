@@ -4734,6 +4734,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
         capture_deferred_totals,
         capture_failure_is_live,
         capture_failure_totals,
+        deferred_compile_pieces,
         last_capture_failure_at,
     )
 
@@ -4758,11 +4759,34 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
             + state_size_hint(state_root),
             details,
         )
+    details["deferred_pieces"] = deferred_compile_pieces(state)
     adoption = _adoption_state(root, state_root)
     details["adoption_state"] = adoption
     if adoption not in {"adopted", "unknown"}:
         return _result("capture", "degraded", _capture_disabled_message(adoption), details)
-    return _capture_loss_result(lost, live, details)
+    result = _capture_loss_result(lost, live, details)
+    result["message"] += _deferred_pieces_sentence(details["deferred_pieces"])
+    return result
+
+
+def _deferred_pieces_sentence(pieces: list[dict]) -> str:
+    """Informational: a piece too large for the compile window is pending, not lost."""
+    if not pieces:
+        return ""
+    needed = max(_whole(piece.get("needed_window_tokens")) for piece in pieces)
+    named = ", ".join(
+        f"{piece.get('path')} ({_whole(piece.get('bytes'))} bytes)" for piece in pieces[:3]
+    )
+    more = f" and {len(pieces) - 3} more" if len(pieces) > 3 else ""
+    return (
+        f" {len(pieces)} daily-log piece(s) deferred as too large for the compile "
+        f"window, not lost: {named}{more}. They stay pending and every compile "
+        f"retries them; set {pieces[0].get('setting')} to at least {needed} to compile them."
+    )
+
+
+def _whole(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _adoption_state(root: Path, state_root: Path) -> str:

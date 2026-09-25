@@ -614,18 +614,19 @@ def _report_stage_detail(stage: str, failure: str, detail: str) -> None:
     )
 
 
-def _record_oversized_daily(logical_path: str) -> None:
-    """Leave a durable trace of a daily log the compiler cannot take as one piece."""
-    try:
-        from capture_diagnostics import record_capture_failure
+@dataclass(frozen=True)
+class DeferredPiece:
+    """A piece the configured window cannot take: set aside, left pending."""
 
-        record_capture_failure(
-            "compile_oversized_daily",
-            f"{logical_path} exceeds the compile input budget and was not compiled; "
-            f"{COMPILE_CONTEXT_WINDOW_ENV} sets the model's context window",
-        )
-    except Exception:  # noqa: BLE001 - diagnostics never break a compile
-        pass
+    daily: DailySnapshot
+    window_tokens: int
+    needed_window_tokens: int
+
+
+@dataclass(frozen=True)
+class CompilePacking:
+    batches: tuple[CompileBatch, ...]
+    deferred: tuple[DeferredPiece, ...] = ()
 
 
 def pack_compile_batches(
@@ -634,14 +635,32 @@ def pack_compile_batches(
     model: str | None,
     token_adapters: Mapping[str, TokenCounter] | None = None,
 ) -> tuple[CompileBatch, ...]:
+    return plan_compile_batches(inputs, model=model, token_adapters=token_adapters).batches
+
+
+def plan_compile_batches(
+    inputs: CompileInputs,
+    *,
+    model: str | None,
+    token_adapters: Mapping[str, TokenCounter] | None = None,
+) -> CompilePacking:
+    """Batch every piece that fits, and set aside each one that cannot.
+
+    A piece is already cut down the ladder before the fit check, so one that
+    still does not fit cannot be cut smaller; usually it is one long entry. It
+    is deferred, not refused: it gets no receipt, its day stays pending, and
+    every other piece and day of the run still compiles (issue #3).
+    """
     budget = _compile_budget(model)
-    inputs = _fitted_pieces(inputs, budget, model, token_adapters)
+    fitted = _fitted_pieces(inputs, budget, model, token_adapters)
+    deferred = _oversized_pieces(fitted, budget, _batch_measure(fitted, model, token_adapters))
+    inputs = _without_pieces(fitted, {item.daily.part_key for item in deferred})
     measure = _batch_measure(inputs, model, token_adapters)
     daily_paths = {item.logical_path for item in inputs.dailies}
     optional_sources = tuple(
         item for item in inputs.sources if item.logical_path not in daily_paths
     )
-    return tuple(
+    batches = tuple(
         _compile_batch(
             inputs,
             paths,
@@ -652,6 +671,32 @@ def pack_compile_batches(
         )
         for paths in _group_dailies(inputs, budget, measure)
     )
+    return CompilePacking(batches, deferred)
+
+
+def _oversized_pieces(
+    inputs: CompileInputs, budget: ContextBudget, measure: Callable[..., int]
+) -> tuple[DeferredPiece, ...]:
+    overhead = budget.max_input_tokens - budget.available_input_tokens
+    deferred = []
+    for daily in inputs.dailies:
+        needed = measure({daily.part_key})
+        if needed > budget.available_input_tokens:
+            deferred.append(DeferredPiece(daily, budget.max_input_tokens, needed + overhead))
+    return tuple(deferred)
+
+
+def _without_pieces(inputs: CompileInputs, part_keys: set[str]) -> CompileInputs:
+    """The inputs less the set-aside pieces; a day set aside whole is no context either."""
+    if not part_keys:
+        return inputs
+    kept = tuple(item for item in inputs.dailies if item.part_key not in part_keys)
+    kept_paths = {item.logical_path for item in kept}
+    set_aside = {
+        item.logical_path for item in inputs.dailies if item.part_key in part_keys
+    } - kept_paths
+    sources = tuple(item for item in inputs.sources if item.logical_path not in set_aside)
+    return replace(inputs, dailies=kept, sources=sources)
 
 
 def _fitted_pieces(
@@ -667,7 +712,7 @@ def _fitted_pieces(
     instructions and the list of existing notes, which grows with the vault.
     A piece measures what it costs rendered, line labels included, so what is
     kept fits by construction. One entry with nothing inside to cut at is kept
-    as it is, and the fit check after this refuses it by name.
+    as it is, and the fit check after this defers it.
     """
     fixed = _batch_measure(inputs, model, token_adapters)(set())
     room = budget.available_input_tokens - fixed
@@ -746,7 +791,6 @@ def _group_dailies(
     groups: list[set[str]] = []
     current: set[str] = set()
     for daily in inputs.dailies:
-        _require_daily_fits(daily, budget, measure)
         prospective = {*current, daily.part_key}
         if current and measure(prospective) > budget.available_input_tokens:
             groups.append(current)
@@ -756,26 +800,6 @@ def _group_dailies(
     if current:
         groups.append(current)
     return groups
-
-
-def _require_daily_fits(
-    daily: DailySnapshot,
-    budget: ContextBudget,
-    measure: Callable[..., int],
-) -> None:
-    """Refuse a day the budget cannot take.
-
-    A day is already cut down the piece ladder before it gets here, so one part
-    that still will not fit is one entry the window cannot take. That is the
-    refusal the transactional tests pin, and it names the file.
-    """
-    if measure({daily.part_key}) <= budget.available_input_tokens:
-        return
-    _record_oversized_daily(daily.logical_path)
-    raise ValueError(
-        f"daily source exceeds compile input budget: {daily.logical_path} at a "
-        f"{budget.max_input_tokens}-token window ({COMPILE_CONTEXT_WINDOW_ENV})"
-    )
 
 
 def _fitting_context(
@@ -4441,11 +4465,13 @@ def _run(
     _announce_compile(args, dailies)
     inputs = snapshot_compile_inputs(dailies, compiled=_receipt_predicate(coordinator))
     try:
-        batches = pack_compile_batches(inputs, model=None)
+        packing = plan_compile_batches(inputs, model=None)
     except Exception as exc:  # noqa: BLE001 - provider/cache boundary is fail-closed
         _require_compile_active(deadline, cancelled)
         return _failed_compile(args, inputs, exc)
 
+    batches = packing.batches
+    _report_deferred_pieces(args, inputs, packing.deferred)
     _announce_packing(batches)
     outcomes: list[BatchOutcome] = []
     for batch in batches:
@@ -4471,6 +4497,45 @@ def _announce_compile(args: argparse.Namespace, dailies: Sequence[Path]) -> None
     print(f"compile_memory: compiling {len(dailies)} daily log(s){suffix}:")
     for path in dailies:
         print(f"  - {path.relative_to(ROOT).as_posix()}")
+
+
+def _report_deferred_pieces(
+    args: argparse.Namespace, inputs: CompileInputs, deferred: Sequence[DeferredPiece]
+) -> None:
+    """Name each set-aside piece, and keep one diagnostic per piece, never a loss."""
+    for item in deferred:
+        piece = item.daily
+        print(
+            f"compile_memory: deferred {piece.logical_path} bytes "
+            f"{piece.byte_start}-{piece.byte_end}: the piece needs a "
+            f"{item.needed_window_tokens}-token window and the window is "
+            f"{item.window_tokens} ({COMPILE_CONTEXT_WINDOW_ENV}); the day stays pending."
+        )
+    if getattr(args, "dry_run", False):
+        return
+    try:
+        from capture_diagnostics import record_deferred_pieces
+
+        record_deferred_pieces(
+            {item.logical_path for item in inputs.dailies},
+            [_deferred_piece_record(item) for item in deferred],
+        )
+    except Exception:  # noqa: BLE001 - diagnostics never break a compile
+        pass
+
+
+def _deferred_piece_record(item: DeferredPiece) -> dict[str, object]:
+    piece = item.daily
+    return {
+        "path": piece.logical_path,
+        "sha256": piece.sha256,
+        "byte_start": piece.byte_start,
+        "byte_end": piece.byte_end,
+        "bytes": len(piece.content),
+        "window_tokens": item.window_tokens,
+        "needed_window_tokens": item.needed_window_tokens,
+        "setting": COMPILE_CONTEXT_WINDOW_ENV,
+    }
 
 
 def _announce_packing(batches: Sequence[CompileBatch]) -> None:

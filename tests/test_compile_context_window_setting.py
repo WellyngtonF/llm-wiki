@@ -4,11 +4,16 @@ Issue #2 of the readable-memory spec, Stage 0. The window was a constant of
 32,768 tokens, and a day was cut into 16 KiB pieces whatever the fixed prompt
 around them cost, so on a vault with a few hundred notes no piece fitted and
 every compile was refused.
+
+Issue #3: one entry that still does not fit is deferred, not refused. It gets no
+receipt and its day stays pending, while every other piece and day compiles, and
+health reports it as deferred, never as a lost capture.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -225,3 +230,114 @@ def test_an_unusable_window_refuses_the_compile_and_says_why(vault: Path, monkey
     assert _compile() == 1
     assert WINDOW_ENV in capsys.readouterr().out
     assert _pending() == [DAY]
+
+
+OTHER_DAY = "2026-07-02.md"
+
+
+def _day_around_one_huge_session(vault: Path) -> Path:
+    """Two ordinary sessions around one of about 40 KB that no cut can shrink."""
+    huge = "".join(
+        f"- Durable detail {index}: " + "the release keeps one lease per checkout " * 24 + "\n"
+        for index in range(40)
+    )
+    day = vault / "knowledge" / "daily" / DAY
+    day.write_text(
+        "# Daily - 2026-07-01\n\n"
+        "## [09:00:00] session-end | test\n- The backend keeps one queue.\n\n"
+        f"## [10:00:00] session-end | test\n{huge}\n"
+        "## [11:00:00] session-end | test\n- The release has one owner.\n",
+        encoding="utf-8",
+    )
+    return day
+
+
+def _ordinary_day(vault: Path) -> Path:
+    day = vault / "knowledge" / "daily" / OTHER_DAY
+    day.write_text(
+        "# Daily - 2026-07-02\n\n## [09:00:00] session-end | test\n- The backend drains nightly.\n",
+        encoding="utf-8",
+    )
+    return day
+
+
+def _receipted_days(vault: Path) -> list[str]:
+    days = []
+    for path in sorted((vault / "knowledge" / "daily" / "receipts").glob("v3-*.md")):
+        payload = json.loads(path.read_bytes().split(b"```json", 1)[1].split(b"```", 1)[0])
+        days.append(Path(payload["source"]["logical_path"]).name)
+    return sorted(days)
+
+
+def _capture_health(vault: Path, monkeypatch) -> dict:
+    """The doctor's capture check, as the owner reads it."""
+    import doctor
+
+    # This vault never adopted Reliability V3; the loss verdict is what is read.
+    monkeypatch.setattr(doctor, "_adoption_state", lambda _root, _state_root: "adopted")
+    return doctor._capture_check(vault, vault.parent / "state", time.monotonic() + 30)
+
+
+def _session_start_capture_line() -> str:
+    import capture_diagnostics
+
+    return capture_diagnostics.capture_failure_line(capture_diagnostics.load_state())
+
+
+def test_an_entry_too_large_is_deferred_and_every_other_day_compiles(
+    vault: Path, monkeypatch, capsys
+) -> None:
+    day = _day_around_one_huge_session(vault)
+    other = _ordinary_day(vault)
+
+    assert _compile() == 0
+
+    assert _pending() == [DAY]
+    assert _mirror(vault)[OTHER_DAY] == sha256_bytes(other.read_bytes())
+    assert _mirror(vault).get(DAY) != sha256_bytes(day.read_bytes())
+    assert DAY in _receipted_days(vault), "the ordinary sessions of the deferred day compiled"
+    assert f"deferred knowledge/daily/{DAY}" in capsys.readouterr().out
+
+    health = _capture_health(vault, monkeypatch)
+    assert health["status"] == "ok"
+    assert health["details"]["lost"] == 0
+    assert health["details"]["kinds"] == {}
+    [piece] = health["details"]["deferred_pieces"]
+    assert piece["path"] == f"knowledge/daily/{DAY}"
+    assert piece["outcome"] == "deferred"
+    assert piece["bytes"] > 32 * 1024
+    assert piece["needed_window_tokens"] > piece["window_tokens"] == 32_768
+    assert "deferred as too large for the compile window, not lost" in health["message"]
+    assert f"knowledge/daily/{DAY}" in health["message"]
+    assert WINDOW_ENV in health["message"]
+    assert _session_start_capture_line() == ""
+    assert not (vault.parent / "state" / "logs" / "capture-failures.jsonl").exists()
+
+
+def test_a_deferred_piece_is_one_diagnostic_until_a_wider_window_compiles_it(
+    vault: Path, monkeypatch
+) -> None:
+    day = _day_around_one_huge_session(vault)
+    other = _ordinary_day(vault)
+    _compile()
+    [first] = _capture_health(vault, monkeypatch)["details"]["deferred_pieces"]
+
+    assert _compile() == 0
+
+    [again] = _capture_health(vault, monkeypatch)["details"]["deferred_pieces"]
+    assert again["runs"] == 2
+    assert again["first_at"] == first["first_at"]
+    assert _pending() == [DAY]
+
+    monkeypatch.setenv(WINDOW_ENV, str(first["needed_window_tokens"]))
+    assert _compile() == 0
+
+    assert _pending() == []
+    assert _mirror(vault) == {
+        DAY: sha256_bytes(day.read_bytes()),
+        OTHER_DAY: sha256_bytes(other.read_bytes()),
+    }
+    health = _capture_health(vault, monkeypatch)
+    assert health["details"]["deferred_pieces"] == []
+    assert "deferred" not in health["message"]
+

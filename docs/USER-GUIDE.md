@@ -432,8 +432,16 @@ A long daily log is cut into pieces at entry boundaries: first 16 KiB, then
 8, 4 and 2 KiB until each piece fits that room. Several pieces share one model
 call when the window is large enough. Every committed piece gets its own receipt.
 So a day stays compiled when you change the window, and a day that grows later
-only sends its new entries. A single entry too large for the window is refused
-by name, and the message names the setting.
+only sends its new entries.
+
+A single entry too large for the window is deferred, not lost. The compile
+prints `compile_memory: deferred <file> bytes <start>-<end>` with the window
+that entry needs, and skips it for this run. It gets no receipt, so its day
+stays pending and every compile retries it. Every other piece and day still
+compiles in the same run. `doctor` names the deferred piece in its capture
+check, with the file, its size and the value to give
+`MEMORY_COMPILE_CONTEXT_TOKENS`. It is informational: it never counts as a lost
+capture, and the entry disappears once a compile takes the piece.
 
 The size is estimated as one token per UTF-8 byte. That over-counts English
 text about three to four times, so the window's full size is a safe value.
