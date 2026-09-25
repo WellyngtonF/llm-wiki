@@ -796,7 +796,7 @@ if [ "${#AGENT_STATUSES[@]}" -eq 0 ]; then
 else
   printf '  - %s\n' "${AGENT_STATUSES[@]}"
 fi
-echo "Maintenance:    $SCHEDULER_BACKEND (nightly 03:00 + weekly Sun 04:00)"
+echo "Maintenance:    $SCHEDULER_BACKEND (nightly 21:00 + weekly Sun 20:00)"
 echo "Code updates:   $(code_update_note "$VAULT_ROOT")"
 echo ""
 echo "Next steps:"

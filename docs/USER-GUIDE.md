@@ -311,7 +311,8 @@ blocks mutation. Run `uv run python scripts/install_control.py rollback --help` 
 ```powershell
 .\install.ps1
 ```
-Creates `LLMWiki-Nightly` (daily 03:00) and `LLMWiki-Weekly` (Sunday 04:00).
+Creates `LLMWiki-Nightly` (daily 21:00) and `LLMWiki-Weekly` (Sunday 20:00). Every
+scheduler backend takes these times from `scripts/maintenance_schedule.py`.
 
 **macOS (per-user LaunchAgent) and Linux (user systemd):**
 ```bash
@@ -339,9 +340,9 @@ END OF SESSION (agent idle or you close)
   MAJOR/MINOR content → structured summary appended to daily log
   MAJOR triggers background compile (detached, doesn't block you)
 
-NIGHTLY 03:00 (scheduler, subject to the operating-system login policy)
-  Drain deferred queue → consolidate yesterday's session records into the daily
-  log → compile all pending → structural lint → rebuild the
+NIGHTLY 21:00 (scheduler, subject to the operating-system login policy)
+  Drain deferred queue → consolidate the pending days' session records, today's
+  included, into the daily log → compile all pending → structural lint → rebuild the
   FTS index → refresh the immutable evidence generation (and its vectors) →
   fetch any missing pinned model weights → compact retrieval telemetry →
   prune old reports → fast-forward the checkout
@@ -354,7 +355,7 @@ installed, and when it changes what the installer renders it says `owned resourc
 rerun_installer`. Resync an extra with `uv sync --locked --no-default-groups --inexact
 --extra <name>`, and re-render owned resources by running the installer again.
 
-SUNDAY 04:00 (scheduler)
+SUNDAY 20:00 (scheduler, an hour before that evening's nightly)
   Everything nightly does + OKF conformance sweep + archive stale + prune failed queue tasks
   + consolidate each note with two or more updates into one page: the old prose goes
   into a collapsed History block, the note ends with its one Claims ledger, and

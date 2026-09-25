@@ -116,7 +116,45 @@ def test_an_update_registers_the_tasks_again_under_the_new_contract(tmp_path, mo
     _install(tmp_path, _resource(tmp_path, machine))
 
     writes = [call for call in machine.calls if call[0] != "-StateJson"]
-    assert (before, machine.registered, writes) == (1, 2, [("-Uninstall", 1), ("register", 2)])
+    current = install_control.WINDOWS_TASK_SPEC_VERSION
+    assert (before, machine.registered, writes) == (
+        1,
+        current,
+        [("-Uninstall", 1), ("register", current)],
+    )
+
+
+def _night_spec(root: Path, state_root: Path, uv_path: Path) -> bytes:
+    """What the release before the evening move recorded: version 2, 03:00 and 04:00."""
+    tasks = [
+        {**task, "limit_hours": install_control.WINDOWS_TASK_LIMIT_HOURS[task["kind"]]}
+        for task in LEGACY_TASKS
+    ]
+    return canonical_json_bytes(
+        {
+            "root": str(Path(root).resolve()),
+            "spec": 2,
+            "state_root": str(Path(state_root).resolve()),
+            "tasks": tasks,
+            "uv_path": str(Path(uv_path).resolve()),
+        }
+    )
+
+
+def test_tasks_registered_at_night_are_registered_again_in_the_evening(tmp_path, monkeypatch) -> None:
+    (tmp_path / "state").mkdir()
+    machine = _Machine()
+    with monkeypatch.context() as earlier_release:
+        earlier_release.setattr(install_control, "render_windows_task_spec", _night_spec)
+        earlier_release.setattr(install_control, "WINDOWS_TASK_SPEC_VERSION", 2)
+        _install(tmp_path, _resource(tmp_path, machine))
+    before = machine.registered
+    machine.calls.clear()
+
+    _install(tmp_path, _resource(tmp_path, machine))
+
+    writes = [call for call in machine.calls if call[0] != "-StateJson"]
+    assert (before, machine.registered, writes) == (2, 3, [("-Uninstall", 2), ("register", 3)])
 
 
 def test_the_specification_names_the_limits_the_script_registers() -> None:
@@ -157,15 +195,20 @@ def test_the_two_contracts_never_both_claim_the_same_task() -> None:
             $node.Name -eq 'Test-LLMWikiTaskSpec' }}, $true)
         Invoke-Expression $fn.Extent.Text
         $tasks = @(
-            @('old text', 'PT1H'), @('old text', 'PT3H'),
-            @('new [llm-wiki-task-spec:2]', 'PT3H'), @('new [llm-wiki-task-spec:2]', 'PT180M'),
-            @('new [llm-wiki-task-spec:2]', 'PT1H'), @('new [llm-wiki-task-spec:2]', 'soon')
+            @('old text', 'PT1H', '03:00'), @('old text', 'PT3H', '03:00'),
+            @('new [llm-wiki-task-spec:2]', 'PT3H', '03:00'),
+            @('new [llm-wiki-task-spec:2]', 'PT180M', '03:00'),
+            @('new [llm-wiki-task-spec:2]', 'PT1H', '03:00'),
+            @('new [llm-wiki-task-spec:2]', 'soon', '03:00'),
+            @('new [llm-wiki-task-spec:3]', 'PT3H', '21:00'),
+            @('new [llm-wiki-task-spec:3]', 'PT3H', '03:00')
         ) | ForEach-Object {{ [pscustomobject]@{{
             Description = $_[0]
-            Settings = [pscustomobject]@{{ ExecutionTimeLimit = $_[1] }} }} }}
-        $answers = foreach ($version in 1, 2) {{
+            Settings = [pscustomobject]@{{ ExecutionTimeLimit = $_[1] }}
+            Triggers = @([pscustomobject]@{{ StartBoundary = "2026-09-25T$($_[2]):00" }}) }} }}
+        $answers = foreach ($version in 1, 2, 3) {{
             ,@($tasks | ForEach-Object {{
-                [bool](Test-LLMWikiTaskSpec -Task $_ -SpecVersion $version -LimitHours 3) }})
+                [bool](Test-LLMWikiTaskSpec -Task $_ -SpecVersion $version -LimitHours 3 -At '21:00') }})
         }}
         ConvertTo-Json -Compress $answers
         """
@@ -175,8 +218,9 @@ def test_the_two_contracts_never_both_claim_the_same_task() -> None:
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.splitlines()[-1]) == [
-        [True, True, False, False, False, False],
-        [False, False, True, True, False, False],
+        [True, True, False, False, False, False, False, False],
+        [False, False, True, True, False, False, False, False],
+        [False, False, False, False, False, False, True, False],
     ]
 
 
@@ -184,7 +228,9 @@ STUBS = """
 $script:registered = @()
 function Get-ScheduledTask { param($TaskName, $ErrorAction) $null }
 function New-ScheduledTaskAction { param($Execute, $Argument) 'action' }
-function New-ScheduledTaskTrigger { param([switch]$Daily, [switch]$Weekly, $DaysOfWeek, $At) 'trigger' }
+function New-ScheduledTaskTrigger {
+    param([switch]$Daily, [switch]$Weekly, $DaysOfWeek, $At) "$DaysOfWeek $At".Trim()
+}
 function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel) 'principal' }
 function New-ScheduledTaskSettingsSet {
     param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries,
@@ -193,7 +239,7 @@ function New-ScheduledTaskSettingsSet {
 }
 function Register-ScheduledTask {
     param($TaskName, $Action, $Trigger, $Settings, $Principal, $Description)
-    $script:registered += ,@($Settings, $Description.EndsWith('[llm-wiki-task-spec:2]'))
+    $script:registered += ,@($Settings, $Description.EndsWith('[llm-wiki-task-spec:3]'), $Trigger)
 }
 """
 
@@ -217,13 +263,15 @@ def test_a_registration_carries_the_marker_and_the_limits(tmp_path) -> None:
     command = STUBS + textwrap.dedent(
         f"""
         . {json.dumps(str(SCRIPT))} -VaultRoot {json.dumps(str(tmp_path))} `
-            -StateRoot {json.dumps(str(tmp_path))} -UvPath {json.dumps(str(tmp_path / "uv.exe"))} 6>$null
+            -StateRoot {json.dumps(str(tmp_path))} -UvPath {json.dumps(str(tmp_path / "uv.exe"))} `
+            -NightlyAt 21:00 -WeeklyAt 20:00 -WeeklyDay Sunday 6>$null
         ConvertTo-Json -Compress $script:registered
         """
     )
 
     result = _run(command)
 
-    expected = [[hours, True] for hours in _specified_limit_hours()]
+    triggers = ["21:00", "Sunday 20:00"]
+    expected = [[hours, True, at] for hours, at in zip(_specified_limit_hours(), triggers)]
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout.splitlines()[-1]) == expected

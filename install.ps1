@@ -447,7 +447,7 @@ try {
         $installControl.scheduler_backend -ne "task_scheduler") {
         throw "Install control returned an invalid result"
     }
-    Ok "Task Scheduler verified: nightly 03:00 + weekly Sun 04:00 (Interactive)"
+    Ok "Task Scheduler verified: nightly 21:00 + weekly Sun 20:00 (Interactive)"
 } catch {
     $schedulerWarning = $true
     Warn "Install ownership transaction or Task Scheduler verification failed"

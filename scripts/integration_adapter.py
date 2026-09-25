@@ -2476,13 +2476,13 @@ def _run_session_start_maintenance() -> int:
 
 
 def _catch_up_missed_nightly() -> None:
-    """Ask for the nightly when the scheduler's run did not happen today.
+    """Ask for the nightly when its latest scheduled run did not happen.
 
     This pass is detached, so the claim and the spawn cost the hook nothing. The
     schedulers catch up where they can — a systemd timer with `Persistent=true`, a
     LaunchAgent at wake, a Windows task with `-StartWhenAvailable` after sign-in — but
-    a machine signed out at 03:00 and the explicit cron fallback never do, and until
-    now no shipped hook reached this code at all. See
+    a machine signed out at the scheduled time and the explicit cron fallback never
+    do, and until now no shipped hook reached this code at all. See
     `docs/research/2026-09-17-a-missed-nightly-is-caught-up-and-codex-keeps-its-stop.md`.
     """
     try:

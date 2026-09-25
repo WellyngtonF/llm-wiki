@@ -5120,9 +5120,9 @@ def _scheduler_check(root: Path, state_root: Path, now: datetime, deadline: floa
 
 
 # A day plus slack for a run that starts late or takes long. Freshness of a
-# scheduled job is an interval, not a calendar boundary: the nightly runs at
-# 03:00, so comparing against "today" called a healthy timer stale every night
-# from midnight until it ran. See
+# scheduled job is an interval, not a calendar boundary: the nightly runs at a
+# fixed hour (`maintenance_schedule`), so comparing against "today" called a
+# healthy timer stale every day from midnight until it ran. See
 # docs/research/2026-08-22-scheduled-job-freshness.md.
 NIGHTLY_FRESH_SECONDS = 26 * 3600
 

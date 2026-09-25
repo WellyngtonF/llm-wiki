@@ -39,6 +39,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Failure events open work-state blockers, empty turns append no checkpoint, and
   checkpoints record the branch. Weekly consolidation keeps exactly one claims
   ledger.
+- Scheduled maintenance runs in the evening: nightly 21:00 and weekly Sunday 20:00
+  (was 03:00 and Sunday 04:00), on every backend from `scripts/maintenance_schedule.py`;
+  the nightly consolidates today's sessions too, a morning session no longer calls
+  last evening's run missed, and rerunning the installer re-registers existing tasks
+  (Windows task spec 3).
 
 ### Removed
 

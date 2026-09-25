@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 
+import maintenance_schedule
 from reliable_memory import canonical_json_bytes, fsync_directory, validate_schema
 
 # One install-control record (`run/install/*.json`); a session record allows 8 MiB.
@@ -530,9 +531,7 @@ def _provider_items() -> tuple[tuple[str, str], ...]:
 
 
 def _launchd_calendar(kind: str) -> dict[str, int]:
-    if kind == "nightly":
-        return {"Hour": 3, "Minute": 0}
-    return {"Hour": 4, "Minute": 0, "Weekday": 0}
+    return maintenance_schedule.launchd_calendar(maintenance_schedule.SCHEDULE[kind])
 
 
 def _launchd_path(uv_path: Path) -> str:
@@ -657,9 +656,7 @@ def _systemd_timer(kind: str) -> bytes:
 
 
 def _systemd_calendar(kind: str) -> str:
-    if kind == "nightly":
-        return "*-*-* 03:00:00"
-    return "Sun *-*-* 04:00:00"
+    return maintenance_schedule.systemd_calendar(maintenance_schedule.SCHEDULE[kind])
 
 
 def render_systemd_definitions(root: Path, state_root: Path, uv_path: Path) -> dict[str, bytes]:
@@ -1419,8 +1416,8 @@ def render_cron_block(root: Path, state_root: Path, uv_path: Path) -> bytes:
     )
     lines = (
         CRON_START.decode(),
-        f"0 3 * * * {nightly}",
-        f"0 4 * * 0 {weekly}",
+        f"{maintenance_schedule.cron_fields(maintenance_schedule.NIGHTLY)} {nightly}",
+        f"{maintenance_schedule.cron_fields(maintenance_schedule.WEEKLY)} {weekly}",
         CRON_END.decode(),
     )
     return "\n".join(lines).encode("utf-8")
@@ -1643,7 +1640,9 @@ def windows_environment_resources(
 # equal to the corrected contract and was never rewritten. Version 1 stays readable:
 # installed manifests record it, and uninstall and rollback have to take it back.
 # See docs/research/2026-09-17-a-changed-task-setting-reaches-an-installed-machine.md.
-WINDOWS_TASK_SPEC_VERSION = 2
+# Version 3 moved the tasks from 03:00 and Sunday 04:00 to the evening
+# (`maintenance_schedule`); versions 1 and 2 keep the times they were registered at.
+WINDOWS_TASK_SPEC_VERSION = 3
 # Above each pass's own worst case, which now counts the checkout update and
 # the whole provider order one model call may walk (about 3.2 h and 4.9 h).
 # Research: docs/research/2026-09-18-a-pass-that-knows-how-long-it-can-be.md
@@ -1661,30 +1660,47 @@ def render_windows_task_spec(root: Path, state_root: Path, uv_path: Path) -> byt
     return canonical_json_bytes(value)
 
 
-def _legacy_windows_tasks() -> list[dict[str, object]]:
+def _windows_tasks_at(nightly: str, weekly: str, day: str) -> list[dict[str, object]]:
     return [
-        {"at": "03:00", "kind": "nightly", "name": "LLMWiki-Nightly"},
+        {"at": nightly, "kind": "nightly", "name": "LLMWiki-Nightly"},
         {
-            "at": "04:00",
-            "day": "Sunday",
+            "at": weekly,
+            "day": day,
             "kind": "weekly",
             "name": "LLMWiki-Weekly",
         },
     ]
 
 
-def _expected_windows_tasks() -> list[dict[str, object]]:
+def _legacy_windows_tasks() -> list[dict[str, object]]:
+    """The tasks versions 1 and 2 registered, at the night-time hours of their day."""
+    return _windows_tasks_at("03:00", "04:00", "Sunday")
+
+
+def _with_limits(tasks: list[dict[str, object]]) -> list[dict[str, object]]:
     return [
-        {**task, "limit_hours": WINDOWS_TASK_LIMIT_HOURS[str(task["kind"])]}
-        for task in _legacy_windows_tasks()
+        {**task, "limit_hours": WINDOWS_TASK_LIMIT_HOURS[str(task["kind"])]} for task in tasks
     ]
+
+
+def _expected_windows_tasks() -> list[dict[str, object]]:
+    weekly = maintenance_schedule.WEEKLY
+    return _with_limits(
+        _windows_tasks_at(
+            maintenance_schedule.NIGHTLY.clock,
+            weekly.clock,
+            maintenance_schedule.day_name(weekly),
+        )
+    )
 
 
 def _windows_spec_version(value: Mapping[str, object]) -> int:
     """Which script contract a decoded specification was registered under."""
+    versioned = {"root", "spec", "state_root", "tasks", "uv_path"}
     shapes = {
         1: ({"root", "state_root", "tasks", "uv_path"}, _legacy_windows_tasks()),
-        2: ({"root", "spec", "state_root", "tasks", "uv_path"}, _expected_windows_tasks()),
+        2: (versioned, _with_limits(_legacy_windows_tasks())),
+        3: (versioned, _expected_windows_tasks()),
     }
     version = value.get("spec", 1)
     if type(version) is not int or version not in shapes:
@@ -1724,6 +1740,7 @@ def _windows_task_command(
     uv_path: Path,
     mode: str | None,
     spec_version: int = WINDOWS_TASK_SPEC_VERSION,
+    tasks: Sequence[Mapping[str, object]] | None = None,
 ) -> tuple[str, ...]:
     command = (
         powershell,
@@ -1741,6 +1758,7 @@ def _windows_task_command(
         str(Path(uv_path).resolve()),
         "-SpecVersion",
         str(spec_version),
+        *_windows_task_times(_expected_windows_tasks() if tasks is None else tasks),
     )
     if mode is None:
         return command
@@ -1762,6 +1780,20 @@ def _windows_task_command_from_spec(
         uv_path=Path(str(spec["uv_path"])),
         mode=mode,
         spec_version=_windows_spec_version(spec),
+        tasks=spec["tasks"],
+    )
+
+
+def _windows_task_times(tasks: Sequence[Mapping[str, object]]) -> tuple[str, ...]:
+    """The script registers the times the specification names; it holds none itself."""
+    nightly, weekly = tasks
+    return (
+        "-NightlyAt",
+        str(nightly["at"]),
+        "-WeeklyAt",
+        str(weekly["at"]),
+        "-WeeklyDay",
+        str(weekly["day"]),
     )
 
 

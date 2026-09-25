@@ -618,15 +618,23 @@ def _record_days(vault: Path) -> list[str]:
     return sorted(item.name for item in directory.iterdir() if item.is_dir())
 
 
-def pending_days(vault: Path, state: dict, today: str | None = None) -> list[str]:
-    """Days before today whose records are not all consolidated yet, oldest first.
+def pending_days(
+    vault: Path, state: dict, today: str | None = None, *, include_today: bool = False
+) -> list[str]:
+    """Days up to today whose records are not all consolidated yet, oldest first.
 
-    Today is never pending: its sessions are still being written, and closing it
-    at noon would leave its evening unread. A day whose records changed since it
-    was consolidated — a session captured late, for instance — is pending again.
+    Today is pending only when asked for: the scheduled pass runs in the evening
+    (`maintenance_schedule`), when the day's sessions are written, and asks for it
+    so they are read the same evening. A day whose records changed since it was
+    consolidated — a session captured after the pass, for instance — is pending
+    again, so an evening closed early is reopened by the next pass.
     """
     before = _today_or(today)
-    return [day for day in _record_days(vault) if _pending(vault, day, before, state)]
+    return [
+        day
+        for day in _record_days(vault)
+        if _pending(vault, day, before, state, include_today=include_today)
+    ]
 
 
 def _today_or(today: str | None) -> str:
@@ -635,8 +643,11 @@ def _today_or(today: str | None) -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
-def _pending(vault: Path, day: str, before: str, state: dict) -> bool:
-    return day < before and not _already_consolidated(vault, state, day)
+def _pending(
+    vault: Path, day: str, before: str, state: dict, *, include_today: bool = False
+) -> bool:
+    in_range = day <= before if include_today else day < before
+    return in_range and not _already_consolidated(vault, state, day)
 
 
 def _skip_reason(vault: Path, day: str, state: dict | None) -> str | None:
@@ -660,6 +671,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--all-pending",
         action="store_true",
         help="Catch up every day that has records and was never consolidated",
+    )
+    parser.add_argument(
+        "--include-today",
+        action="store_true",
+        help="With --all-pending: today is pending too (the evening scheduled pass)",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="With --all-pending: stop after N days"
@@ -711,7 +727,7 @@ def _budget_deadline(seconds: float) -> float | None:
 def _selected_days(args: argparse.Namespace) -> list[str]:
     if not args.all_pending:
         return [args.day or _default_day()]
-    days = pending_days(args.vault, _safe_state())
+    days = pending_days(args.vault, _safe_state(), include_today=args.include_today)
     if args.limit > 0:
         return days[: args.limit]
     return days

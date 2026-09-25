@@ -34,6 +34,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import maintenance_schedule  # noqa: E402
 from context_budget import (  # noqa: E402
     DEFAULT_CONTEXT_BUDGET,
     BudgetExceededError,
@@ -94,8 +95,14 @@ MAX_TRANSACTION_DATABASE_BYTES = 64 * 1024 * 1024
 SESSION_CONTEXT_MAX_CHARS = 4000
 
 
-def _today_iso(today: str | None) -> str:
-    return today or datetime.now().date().isoformat()
+def _due_day_iso(day: str | None) -> str:
+    """The evening whose nightly is the latest one due: yesterday's, before 21:00.
+
+    The pass runs in the evening (`maintenance_schedule`), so a morning session
+    that compared against today would call last evening's run missed and start a
+    second pass every morning.
+    """
+    return day or maintenance_schedule.due_day().isoformat()
 
 
 def _claim_is_live(existing: dict, today: str, now: datetime) -> bool:
@@ -107,14 +114,19 @@ def _claim_is_live(existing: dict, today: str, now: datetime) -> bool:
 
 
 def _claim_nightly_catchup(today: str | None = None, now: str | None = None) -> bool:
-    """Atomically reserve today's catchup when no nightly completed today."""
-    today = _today_iso(today)
+    """Atomically reserve a catchup when no nightly completed since the due one.
+
+    `today` is the due evening. A pass records its own date, which for a catch-up
+    run the next morning is after the evening it stood in for, so any date from
+    the due one on counts as done.
+    """
+    today = _due_day_iso(today)
     claimed_at = _parse_iso_safe(now) or datetime.now(timezone.utc)
     claimed = False
 
     def _mutate(state: dict) -> None:
         nonlocal claimed
-        if str(state.get("last_nightly_date", ""))[:10] == today:
+        if str(state.get("last_nightly_date", ""))[:10] >= today:
             return
         if _claim_is_live(_state_map(state, "nightly_catchup_claim"), today, claimed_at):
             return
@@ -153,13 +165,13 @@ def maybe_spawn_nightly_catchup(today: str | None = None) -> None:
     every shipped hook goes through the adapter, which never reached this module's
     `main()`. The schedulers catch up on their own where they can — a systemd timer
     with `Persistent=true`, a LaunchAgent at wake, a Windows task with
-    `-StartWhenAvailable` after sign-in — but a machine signed out at 03:00, and the
-    explicit cron fallback, never do. See
+    `-StartWhenAvailable` after sign-in — but a machine signed out at the scheduled
+    time, and the explicit cron fallback, never do. See
     `docs/research/2026-09-17-a-missed-nightly-is-caught-up-and-codex-keeps-its-stop.md`.
     """
     if os.environ.get("MEMORY_LLM_PROVIDER") == "fake":
         return
-    today = _today_iso(today)
+    today = _due_day_iso(today)
     if _claim_nightly_catchup(today):
         _spawn_nightly_catchup(today)
 

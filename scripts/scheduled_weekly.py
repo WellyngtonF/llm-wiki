@@ -1,4 +1,7 @@
-"""Weekly deep maintenance — runs Sunday 04:00 via Windows Task Scheduler.
+"""Weekly deep maintenance — started once a week by the installed scheduler.
+
+It runs on Sunday an hour before that evening's nightly pass; the time lives in
+`maintenance_schedule.py`.
 
 What it does:
 1. Everything the nightly pass does (queue work + compile + lint).

@@ -1,10 +1,10 @@
-"""Nightly consolidation pass — started at 03:00 by the installed scheduler.
+"""Nightly consolidation pass — started every evening by the installed scheduler.
 
-The scheduler is Task Scheduler on Windows, a user LaunchAgent on macOS, a
+The run time lives in `maintenance_schedule.py`. The scheduler is Task Scheduler on Windows, a user LaunchAgent on macOS, a
 user systemd timer on Linux, cron as the explicit degraded fallback
 (`install_control.py`). The pass runs, in order: capture-intent adoption,
-runtime reclaim, the deferred memory queue, yesterday's session
-consolidation; the compile (spawned through `maybe_compile`, followed until
+runtime reclaim, the deferred memory queue, the pending days' session
+consolidation, today's included; the compile (spawned through `maybe_compile`, followed until
 it finishes or the wait bound passes) and user-turn keying; then the steps
 that read the compile's output — the note index and project pages,
 orphaned-checkpoint clearing, structural lint,
@@ -136,7 +136,7 @@ def _record_nightly_result(today: str, failures: int, error: str | None = None) 
         else:
             state["last_nightly_status"] = "success"
             state["last_nightly_date"] = today
-            # The date alone cannot say whether a 03:00 run is late; the health
+            # The date alone cannot say whether a scheduled run is late; the health
             # check needs an instant to measure an interval against.
             state["last_nightly_at"] = datetime.now(timezone.utc).isoformat(
                 timespec="seconds"
@@ -258,13 +258,20 @@ def _episode_step() -> _Step:
     waiting. Every promoted item must quote the record it came from. It used to
     take yesterday only, so a day that failed once was never read again; five
     such days were found on 2026-09-14. See
-    `docs/research/2026-09-14-a-day-that-failed-is-tried-again.md`.
+    `docs/research/2026-09-14-a-day-that-failed-is-tried-again.md`. The pass runs
+    in the evening, so today is included: its sessions are read the same evening,
+    and a session captured after the pass reopens the day for the next one.
     """
     return _Step(
         "Step 1b: consolidating pending sessions...",
         "episodes",
         _script("episode_consolidation.py")
-        + ["--all-pending", "--budget-seconds", str(EPISODE_BUDGET_SECONDS)],
+        + [
+            "--all-pending",
+            "--include-today",
+            "--budget-seconds",
+            str(EPISODE_BUDGET_SECONDS),
+        ],
         EPISODE_BUDGET_SECONDS + provider_margin_seconds(),
     )
 

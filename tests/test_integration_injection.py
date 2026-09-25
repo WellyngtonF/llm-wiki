@@ -4629,11 +4629,11 @@ def test_windows_scheduler_status_accepts_only_the_registered_contract(tmp_path)
             $limit = if ($kind -eq 'nightly') {{ {ps_literal(_task_limit("nightly"))} }} else {{ {ps_literal(_task_limit("weekly"))} }}
             [pscustomobject]@{{
                 State = 'Ready'
-                Description = 'LLM-wiki task [llm-wiki-task-spec:2]'
+                Description = 'LLM-wiki task [llm-wiki-task-spec:3]'
                 Settings = [pscustomobject]@{{ ExecutionTimeLimit = $limit }}
                 Actions = @($action)
                 Triggers = @([pscustomobject]@{{
-                    StartBoundary = '2026-08-15T03:00:00'
+                    StartBoundary = $(if ($kind -eq 'nightly') {{ '2026-08-15T21:00:00' }} else {{ '2026-08-16T20:00:00' }})
                     Enabled = $true
                 }})
                 Principal = [pscustomobject]@{{
@@ -4653,12 +4653,16 @@ def test_windows_scheduler_status_accepts_only_the_registered_contract(tmp_path)
         $valid = Test-LLMWikiScheduledTasks `
             -VaultRoot {ps_literal(root)} `
             -StateRoot {ps_literal(state)} `
-            -UvPath {ps_literal(uv_path)}
+            -UvPath {ps_literal(uv_path)} `
+            -NightlyAt '21:00' `
+            -WeeklyAt '20:00'
         $script:invalid = $true
         $invalid = Test-LLMWikiScheduledTasks `
             -VaultRoot {ps_literal(root)} `
             -StateRoot {ps_literal(state)} `
-            -UvPath {ps_literal(uv_path)}
+            -UvPath {ps_literal(uv_path)} `
+            -NightlyAt '21:00' `
+            -WeeklyAt '20:00'
         @([bool]$valid, [bool]$invalid) | ConvertTo-Json -Compress
         """
     )

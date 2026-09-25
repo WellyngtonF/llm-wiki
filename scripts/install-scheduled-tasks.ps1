@@ -1,8 +1,11 @@
 # Installs Windows Task Scheduler entries for fully-automatic memory maintenance.
 #
 # Creates two tasks:
-#   - LLMWiki-Nightly: runs nightly at 03:00 - queue drain + compile + lint
-#   - LLMWiki-Weekly:  runs every Sunday 04:00 - deep maintenance + OKF sweep
+#   - LLMWiki-Nightly: runs every evening - queue drain + compile + lint
+#   - LLMWiki-Weekly:  runs every week, before that evening's nightly - deep
+#     maintenance + OKF sweep
+# The times are not held here: install_control.py passes them from
+# scripts/maintenance_schedule.py (-NightlyAt, -WeeklyAt, -WeeklyDay).
 #
 # Both run as the current user (no admin elevation needed) and only when
 # the user is logged on. Output goes to $env:LLM_WIKI_STATE_ROOT\logs\.
@@ -18,10 +21,16 @@ param(
     [Parameter(Mandatory = $true)][string]$VaultRoot,
     [Parameter(Mandatory = $true)][string]$StateRoot,
     [Parameter(Mandatory = $true)][string]$UvPath,
-    # Which contract the tasks are judged by. 2 is the current one: a marker in the
-    # description and the time limits below. 1 is what machines installed before
-    # 2026-09-17 carry; the install control plane passes it to take such tasks back.
-    [ValidateSet(1, 2)][int]$SpecVersion = 2,
+    # Which contract the tasks are judged by. 3 is the current one: a marker in the
+    # description, the time limits below and the trigger times passed in. 2 is the
+    # same without the time check, registered at 03:00 before the move to the
+    # evening; 1 is what machines installed before 2026-09-17 carry. The install
+    # control plane passes the older versions to take such tasks back.
+    [ValidateSet(1, 2, 3)][int]$SpecVersion = 3,
+    # Local "HH:mm" trigger times and the weekly task's day, from the specification.
+    [string]$NightlyAt = "",
+    [string]$WeeklyAt = "",
+    [string]$WeeklyDay = "",
     [switch]$Uninstall,
     [switch]$Status,
     [switch]$StateJson,
@@ -66,23 +75,28 @@ function New-LLMWikiScheduledAction {
 function Test-LLMWikiTaskSpec {
     # The time limit was not part of what "equivalent" meant, so a machine registered
     # with one-hour tasks passed as up to date and kept killing the nightly pass.
-    # Version 2 tasks carry a marker and the contract's limit; version 1 tasks are
-    # exactly those without the marker, so the two never both claim the same tasks.
+    # Version 2 and 3 tasks carry their version's marker and the contract's limit,
+    # version 3 also its trigger time; version 1 tasks are exactly those without a
+    # marker, so no two versions ever claim the same tasks.
     # See docs/research/2026-09-17-a-changed-task-setting-reaches-an-installed-machine.md.
     param(
         [Parameter(Mandatory = $true)]$Task,
         [Parameter(Mandatory = $true)][int]$SpecVersion,
-        [Parameter(Mandatory = $true)][int]$LimitHours
+        [Parameter(Mandatory = $true)][int]$LimitHours,
+        [string]$At = ""
     )
-    $marked = ([string]$Task.Description).Contains("[llm-wiki-task-spec:2]")
-    if ($SpecVersion -eq 1) { return -not $marked }
-    if (-not $marked) { return $false }
+    $description = [string]$Task.Description
+    if ($SpecVersion -eq 1) { return -not $description.Contains("[llm-wiki-task-spec:") }
+    if (-not $description.Contains("[llm-wiki-task-spec:$SpecVersion]")) { return $false }
     try {
         $limit = [System.Xml.XmlConvert]::ToTimeSpan([string]$Task.Settings.ExecutionTimeLimit)
     } catch [System.FormatException] {
         return $false
     }
-    return $limit -eq (New-TimeSpan -Hours $LimitHours)
+    if ($limit -ne (New-TimeSpan -Hours $LimitHours)) { return $false }
+    if ($SpecVersion -lt 3) { return $true }
+    $boundary = [string]@($Task.Triggers)[0].StartBoundary
+    return $At -ne "" -and $boundary -match "T$([regex]::Escape($At)):"
 }
 
 function Test-LLMWikiScheduledTasks {
@@ -90,12 +104,14 @@ function Test-LLMWikiScheduledTasks {
         [Parameter(Mandatory = $true)][string]$VaultRoot,
         [Parameter(Mandatory = $true)][string]$StateRoot,
         [Parameter(Mandatory = $true)][string]$UvPath,
-        [ValidateSet(1, 2)][int]$SpecVersion = 2
+        [ValidateSet(1, 2, 3)][int]$SpecVersion = 3,
+        [string]$NightlyAt = "",
+        [string]$WeeklyAt = ""
     )
     $verified = $true
     $specifications = @(
-        @{ Name = "LLMWiki-Nightly"; Kind = "nightly"; LimitHours = 4 },
-        @{ Name = "LLMWiki-Weekly"; Kind = "weekly"; LimitHours = 6 }
+        @{ Name = "LLMWiki-Nightly"; Kind = "nightly"; LimitHours = 4; At = $NightlyAt },
+        @{ Name = "LLMWiki-Weekly"; Kind = "weekly"; LimitHours = 6; At = $WeeklyAt }
     )
     foreach ($specification in $specifications) {
         $name = $specification.Name
@@ -153,7 +169,8 @@ function Test-LLMWikiScheduledTasks {
         if (-not (Test-LLMWikiTaskSpec `
                 -Task $task `
                 -SpecVersion $SpecVersion `
-                -LimitHours $specification.LimitHours)) {
+                -LimitHours $specification.LimitHours `
+                -At $specification.At)) {
             $taskValid = $false
         }
         Write-Host "  ${name}:" -ForegroundColor $(if ($taskValid) { "Green" } else { "Yellow" })
@@ -172,7 +189,9 @@ function Get-LLMWikiScheduledTaskState {
         [Parameter(Mandatory = $true)][string]$VaultRoot,
         [Parameter(Mandatory = $true)][string]$StateRoot,
         [Parameter(Mandatory = $true)][string]$UvPath,
-        [ValidateSet(1, 2)][int]$SpecVersion = 2
+        [ValidateSet(1, 2, 3)][int]$SpecVersion = 3,
+        [string]$NightlyAt = "",
+        [string]$WeeklyAt = ""
     )
     $existing = @(
         $tasks | ForEach-Object {
@@ -185,7 +204,9 @@ function Get-LLMWikiScheduledTaskState {
         -VaultRoot $VaultRoot `
         -StateRoot $StateRoot `
         -UvPath $UvPath `
-        -SpecVersion $SpecVersion 6>$null
+        -SpecVersion $SpecVersion `
+        -NightlyAt $NightlyAt `
+        -WeeklyAt $WeeklyAt 6>$null
     if ($verified) { return "equivalent" }
     return "conflict"
 }
@@ -195,7 +216,9 @@ if ($StateJson) {
         -VaultRoot $VaultRoot `
         -StateRoot $StateRoot `
         -UvPath $UvPath `
-        -SpecVersion $SpecVersion
+        -SpecVersion $SpecVersion `
+        -NightlyAt $NightlyAt `
+        -WeeklyAt $WeeklyAt
     [Console]::Out.WriteLine((@{ state = $state } | ConvertTo-Json -Compress))
     if ($script:IsDotSourced) { return } else { exit 0 }
 }
@@ -206,7 +229,9 @@ if ($Status) {
         -VaultRoot $VaultRoot `
         -StateRoot $StateRoot `
         -UvPath $UvPath `
-        -SpecVersion $SpecVersion
+        -SpecVersion $SpecVersion `
+        -NightlyAt $NightlyAt `
+        -WeeklyAt $WeeklyAt
     if ($script:IsDotSourced) { return $verified }
     if ($verified) { exit 0 }
     exit 1
@@ -217,7 +242,9 @@ if ($Uninstall) {
         -VaultRoot $VaultRoot `
         -StateRoot $StateRoot `
         -UvPath $UvPath `
-        -SpecVersion $SpecVersion
+        -SpecVersion $SpecVersion `
+        -NightlyAt $NightlyAt `
+        -WeeklyAt $WeeklyAt
     if ($currentState -eq "conflict") {
         throw "Scheduled task ownership is ambiguous; refusing uninstall"
     }
@@ -248,7 +275,9 @@ $currentState = Get-LLMWikiScheduledTaskState `
     -VaultRoot $VaultRoot `
     -StateRoot $StateRoot `
     -UvPath $UvPath `
-    -SpecVersion $SpecVersion
+    -SpecVersion $SpecVersion `
+    -NightlyAt $NightlyAt `
+    -WeeklyAt $WeeklyAt
 if ($currentState -eq "conflict") {
     throw "Scheduled task ownership is ambiguous; refusing registration"
 }
@@ -260,9 +289,13 @@ if ($currentState -eq "equivalent") {
 # What Test-LLMWikiTaskSpec looks for. A version 1 registration happens only when the
 # control plane rolls an update back to a record that predates the marker.
 $specMarker = ""
-if ($SpecVersion -eq 2) { $specMarker = " [llm-wiki-task-spec:2]" }
+if ($SpecVersion -ge 2) { $specMarker = " [llm-wiki-task-spec:$SpecVersion]" }
+if ($NightlyAt -notmatch '^\d{2}:\d{2}$' -or $WeeklyAt -notmatch '^\d{2}:\d{2}$' -or
+    [string]::IsNullOrWhiteSpace($WeeklyDay)) {
+    throw "Registration needs -NightlyAt, -WeeklyAt (HH:mm) and -WeeklyDay"
+}
 
-# --- Nightly task: 03:00 every day ---
+# --- Nightly task: every day at -NightlyAt ---
 $nightlyAction = New-LLMWikiScheduledAction `
     -Kind nightly `
     -VaultRoot $VaultRoot `
@@ -271,7 +304,7 @@ $nightlyAction = New-LLMWikiScheduledAction `
     -RunnerPath $runnerPath `
     -PowerShellPath $powerShellPath
 
-$nightlyTrigger = New-ScheduledTaskTrigger -Daily -At 3am
+$nightlyTrigger = New-ScheduledTaskTrigger -Daily -At $NightlyAt
 
 # The pass's own bounds add up to about 3.2 hours in auto provider mode
 # (scheduled_nightly.worst_case_seconds, which now counts the checkout update and
@@ -293,7 +326,7 @@ $nightlyPrincipal = New-ScheduledTaskPrincipal `
     -LogonType Interactive `
     -RunLevel Limited
 
-Write-Host "Registering LLMWiki-Nightly (daily 03:00)..." -ForegroundColor Cyan
+Write-Host "Registering LLMWiki-Nightly (daily $NightlyAt)..." -ForegroundColor Cyan
 Register-ScheduledTask `
     -TaskName "LLMWiki-Nightly" `
     -Action $nightlyAction `
@@ -304,7 +337,7 @@ Register-ScheduledTask `
     Out-Null
 Write-Host "  registered" -ForegroundColor Green
 
-# --- Weekly task: Sunday 04:00 ---
+# --- Weekly task: -WeeklyDay at -WeeklyAt ---
 $weeklyAction = New-LLMWikiScheduledAction `
     -Kind weekly `
     -VaultRoot $VaultRoot `
@@ -313,7 +346,7 @@ $weeklyAction = New-LLMWikiScheduledAction `
     -RunnerPath $runnerPath `
     -PowerShellPath $powerShellPath
 
-$weeklyTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 4am
+$weeklyTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $WeeklyDay -At $WeeklyAt
 
 # The weekly pass runs the whole nightly one and more: about 4.9 hours by its own
 # bounds (scheduled_weekly.worst_case_seconds). See
@@ -327,7 +360,7 @@ $weeklySettings = New-ScheduledTaskSettingsSet `
     -RestartCount 2 `
     -RestartInterval (New-TimeSpan -Minutes 30)
 
-Write-Host "Registering LLMWiki-Weekly (Sunday 04:00)..." -ForegroundColor Cyan
+Write-Host "Registering LLMWiki-Weekly ($WeeklyDay $WeeklyAt)..." -ForegroundColor Cyan
 Register-ScheduledTask `
     -TaskName "LLMWiki-Weekly" `
     -Action $weeklyAction `
@@ -350,8 +383,8 @@ if ($RunWeeklyNow) {
 
 Write-Host ""
 Write-Host "Done. Tasks registered for the current logged-on user:" -ForegroundColor Green
-Write-Host "  LLMWiki-Nightly: every day at 03:00"
-Write-Host "  LLMWiki-Weekly:  every Sunday at 04:00"
+Write-Host "  LLMWiki-Nightly: every day at $NightlyAt"
+Write-Host "  LLMWiki-Weekly:  every $WeeklyDay at $WeeklyAt"
 Write-Host ""
 Write-Host "Check status:  .\install-scheduled-tasks.ps1 -Status"
 Write-Host "Uninstall:     .\install-scheduled-tasks.ps1 -Uninstall"

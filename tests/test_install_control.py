@@ -757,10 +757,10 @@ def test_launchd_definitions_use_exact_arguments_and_login_scoped_calendars(
         "LLM_WIKI_STATE_ROOT": str(state.resolve()),
         "PATH": f"{uv_path.resolve().parent}:/usr/bin:/bin:/usr/sbin:/sbin",
     }
-    assert nightly["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
+    assert nightly["StartCalendarInterval"] == {"Hour": 21, "Minute": 0}
     weekly = plistlib.loads(definitions["io.github.ekgardt.llm-wiki.weekly.plist"])
     assert weekly["StartCalendarInterval"] == {
-        "Hour": 4,
+        "Hour": 20,
         "Minute": 0,
         "Weekday": 0,
     }
@@ -788,7 +788,7 @@ def test_systemd_definitions_are_persistent_user_timers_without_shell(tmp_path: 
     escaped_state = str(state.resolve()).replace("\\", "\\\\")
     assert f'Environment="LLM_WIKI_ROOT={escaped_root}"' in nightly_service
     assert f'Environment="LLM_WIKI_STATE_ROOT={escaped_state}"' in nightly_service
-    assert "OnCalendar=*-*-* 03:00:00" in nightly_timer
+    assert "OnCalendar=*-*-* 21:00:00" in nightly_timer
     assert "Persistent=true" in nightly_timer
     assert "WantedBy=timers.target" in nightly_timer
 

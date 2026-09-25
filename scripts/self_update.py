@@ -290,6 +290,7 @@ def _installed_extras(root: Path) -> tuple[str, ...]:
 _OWNED_RESOURCE_SOURCES = (
     "scripts/install_control.py",
     "scripts/installer_config.py",
+    "scripts/maintenance_schedule.py",
     "scripts/integration_hook_config.py",
     "scripts/install-scheduled-tasks.ps1",
     "integrations/",
