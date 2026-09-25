@@ -35,11 +35,24 @@ PAGE = (
     "### Inner\n\n" + "A paragraph of the inner section. " * 12 + "\n\n"
     "## Second\n\n" + "A paragraph of the second section. " * 12 + "\n"
 )
-SOURCES = {"knowledge/daily/2026-01-01.md": CONVERSATION, "knowledge/notes/a-page.md": PAGE}
+LEDGER_PAGE = (
+    "---\ntype: concept\n---\n# Ledger\n\nOne-sentence summary: a page with claims.\n\n"
+    "## Lesson\n\n" + "A paragraph of the lesson. " * 12 + "\n\n"
+    "## Claims\n```json\n"
+    '{"claims":[{"id":"claim-1","text":"A claim."}],"schema_version":"claim-ledger/v1"}\n'
+    "```\n"
+)
+SOURCES = {
+    "knowledge/daily/2026-01-01.md": CONVERSATION,
+    "knowledge/notes/a-page.md": PAGE,
+    "knowledge/notes/a-ledger-page.md": LEDGER_PAGE,
+}
 
 # One pin per released version of the rule. A new version adds a line; an old line never changes.
+# v4 was pinned over the first two sources; v5 added the page with a claims ledger.
 PINNED = {
     "markdown-heading-extractor/v4": "bbb697b4db948a325ac3054a8befc3b78162d4ca2440c9d6e5c55785ea4efb3f",
+    "markdown-heading-extractor/v5": "587b27f79ed153c8a6c2ded20eb8b06eddcd9d63d4171d394ab8d9086a19416b",
 }
 
 
@@ -72,3 +85,11 @@ def test_a_short_user_turn_that_states_a_fact_is_a_chunk_of_its_own():
 
     fact = CONVERSATION.encode("utf-8").index(b"**user:** I moved to Lisbon")
     assert fact in [start for start, _end in spans]
+
+
+def test_a_claims_ledger_is_not_a_chunk():
+    path = "knowledge/notes/a-ledger-page.md"
+    ancestries = [ancestry for _start, _end, ancestry, _sha in _chunk_fields(path, SOURCES[path])]
+
+    assert ["Ledger", "Lesson"] in ancestries
+    assert all("Claims" not in ancestry for ancestry in ancestries)

@@ -163,6 +163,7 @@ remove v2 state by hand.
 Open `knowledge/` as an Obsidian vault. Links are bare `[[slug]]` names, and
 Obsidian derives backlinks itself. Every note ends with a claims ledger: a
 `## Claims` heading followed by a one-line `json` block that the product reads.
+Search does not index it: a note is found by its prose and its evidence lines.
 The snippet `llm-wiki-claims-ledger.css` collapses it so the note reads as prose.
 
 When `knowledge/.obsidian/` exists, `install.sh` and `install.ps1` copy the

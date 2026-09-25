@@ -34,7 +34,8 @@ COLLECTOR_VERSION = "corpus-collector/v1"
 # 2026-09-16 rule — a user turn begins its own chunk — which had shipped under v3.
 # `tests/test_a_chunker_that_changes_changes_its_version.py` holds the pin. See
 # `docs/research/2026-09-17-a-chunker-that-changes-changes-its-version.md`.
-EXTRACTOR_VERSION = "markdown-heading-extractor/v4"
+# v5 (2026-09-25): a note's claims ledger is no longer a chunk (`_is_claim_ledger`).
+EXTRACTOR_VERSION = "markdown-heading-extractor/v5"
 
 MAX_CORPUS_FILES = 10_000
 MAX_CORPUS_FILE_BYTES = MAX_KNOWLEDGE_PAGE_BYTES
@@ -82,6 +83,8 @@ _HEADING = re.compile(
 )
 _FENCE = re.compile(rb"^[ ]{0,3}(`{3,}|~{3,})([^\r\n]*)$")
 _CLOSING_HASHES = re.compile(r"[ \t]+#+[ \t]*$")
+# The opening of a note's claims ledger, as `claims.CLAIM_LEDGER_RE` reads it.
+_CLAIM_LEDGER_OPENING = re.compile(rb"## Claims[ \t]*\r?\n```json[ \t]*\r?\n")
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
 _HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN = re.compile(r"[A-Za-z]")
@@ -1850,10 +1853,23 @@ def _updated_ancestry(
     return kept
 
 
+def _is_claim_ledger(content: bytes, heading: re.Match[bytes]) -> bool:
+    """Whether this section is a note's claims ledger.
+
+    Not retrievable text: one JSON line repeating claim text copied from daily logs,
+    evidence references and hashes, which outranked the prose of the note a query
+    was about in both lanes. Its readers — the claim index, the contradiction
+    pipeline, reflection — read the page file. The `## Evidence` lines stay: they
+    are the note's own claims, and the only chunk of a page that names the blocks
+    `retrieval._complete_from_pages` pulls in.
+    """
+    return _CLAIM_LEDGER_OPENING.match(content, heading.start()) is not None
+
+
 def _append_heading_span(
     spans: list, content: bytes, heading: re.Match[bytes], end: int, ancestry: list
 ) -> None:
-    if not content[heading.start():end].strip():
+    if not content[heading.start():end].strip() or _is_claim_ledger(content, heading):
         return
     if len(spans) >= MAX_CORPUS_CHUNKS:
         raise ValueError("corpus chunk row ceiling exceeded")

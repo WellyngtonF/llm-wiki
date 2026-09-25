@@ -1794,6 +1794,28 @@ def test_maintenance_rebuilds_when_code_extractor_version_changes(tmp_path, monk
     assert second["generation_id"] != first["generation_id"]
 
 
+def test_maintenance_rebuilds_when_the_chunking_rule_changes(tmp_path, monkeypatch):
+    import corpus_snapshot
+    import doctor
+
+    root, state = _vault(tmp_path)
+    (root / "knowledge" / "notes" / "page.md").write_text(
+        "---\ntype: concept\n---\n# Page\n\nOne-sentence summary: a page.\n", encoding="utf-8"
+    )
+    first = doctor.run_generation_maintenance(
+        root=root, state_root=state, time_budget_seconds=LONG_TIMEOUT, max_sources=10
+    )
+    monkeypatch.setattr(corpus_snapshot, "EXTRACTOR_VERSION", "markdown-heading-extractor/next")
+
+    second = doctor.run_generation_maintenance(
+        root=root, state_root=state, time_budget_seconds=LONG_TIMEOUT, max_sources=10
+    )
+
+    assert first["status"] == "built"
+    assert second["status"] == "built"
+    assert second["generation_id"] != first["generation_id"]
+
+
 def test_maintenance_rebuilds_when_classifier_identity_changes(tmp_path, monkeypatch):
     import code_languages
     import doctor
