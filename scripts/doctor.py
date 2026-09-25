@@ -2408,6 +2408,8 @@ def _count_claims(database: sqlite3.Connection, details: dict) -> None:
 
 
 def _claim_status(details: dict) -> str:
+    if details.get("budget_exhausted"):
+        return "degraded"
     if details["index"] == "invalid":
         return "error"
     if details["diagnostics"]:
@@ -2450,6 +2452,8 @@ def _claim_cause(code: str, count: int) -> str:
 def _claim_message(status: str, details: dict) -> str:
     if status == "ok":
         return "Claim index is healthy."
+    if details.get("budget_exhausted"):
+        return "Check not completed because the doctor time budget was exhausted."
     if details["index"] == "invalid":
         return "Claim index is unreadable; " + CLAIM_REPAIR
     causes = "; ".join(
@@ -2509,7 +2513,11 @@ def _read_claim_index(
             if _deadline_reached(deadline):
                 raise TimeoutError("claim check deadline")
             _record_claim_schema(ClaimIndex, database, details)
-    except (OSError, PermissionError, sqlite3.Error, TimeoutError, ValueError):
+    except TimeoutError:
+        # The install smoke runs doctor on a few seconds; a read it had no time
+        # for says nothing about the index, which a longer run finds healthy.
+        details.update(index="unknown", budget_exhausted=True)
+    except (OSError, PermissionError, sqlite3.Error, ValueError):
         details["index"] = "invalid"
         details["read_error"] = True
 

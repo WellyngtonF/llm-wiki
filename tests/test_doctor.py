@@ -3827,6 +3827,21 @@ def test_a_vault_that_has_recorded_no_claim_is_healthy(tmp_path) -> None:
     assert result["status"] == "ok"
     assert result["details"]["index"] == "missing"
 
+def test_a_claim_check_that_runs_out_of_time_is_unfinished_not_unreadable(tmp_path) -> None:
+    """The install smoke gives doctor a short budget; running out is not a broken index."""
+    import sqlite3
+
+    import doctor
+
+    (tmp_path / "cache").mkdir()
+    sqlite3.connect(tmp_path / "cache" / "claims.sqlite3").close()
+
+    result = doctor._claim_check(tmp_path, tmp_path, deadline=0.0)
+
+    assert result["status"] == "degraded"
+    assert result["details"]["budget_exhausted"] is True
+    assert "time budget" in result["message"]
+
 def test_a_file_that_will_not_parse_is_named_not_treated_as_ill_health() -> None:
     """A refresh cannot fix a file the repository keeps deliberately broken."""
     import doctor
