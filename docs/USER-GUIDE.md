@@ -480,6 +480,17 @@ Work in a directory that belongs to no registered repository (web research, file
 chores) creates nothing under `knowledge/projects/`; it is still captured into the
 daily log and compiled as before, and its daily entries name no project.
 
+A note the compile creates carries `project: "<project>"` in its frontmatter when
+its evidence comes from a registered repository, so search can filter by project.
+The compile reads it from the cited daily entries (a capture's `Repository:` line,
+a breadcrumb's `<project>/<repository>` tag) through the project map as it is at
+compile time, never from the model: a repository moved to another project files its
+new notes there, and one no longer in the map gives none. When the evidence spans
+several projects, the note takes the one most cited entries name; entries from
+unregistered work count as a side of their own, and a tie gives no project. An
+update never changes a note's frontmatter, so an existing `project:` stays as it
+is and a note without one does not gain it.
+
 The folders follow the map. Attaching a repository to another project moves its
 folder, renaming a project moves the project's folder, and detaching a repository
 or removing a project deletes its work state. Your notes are never touched. Each

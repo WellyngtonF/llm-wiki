@@ -37,6 +37,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -100,6 +101,7 @@ from memory_state import (  # noqa: E402
     load_state,
     update_state,
 )
+from note_project import NoteProjects  # noqa: E402
 from page_status import DEFAULT_STATUS, is_retired, normalized_status  # noqa: E402
 from rebuild_memory_index import MAX_INDEX_BYTES  # noqa: E402
 from reliable_memory import (  # noqa: E402
@@ -2472,7 +2474,10 @@ def _require_literal_match(
 
 
 def _render_page(
-    operation: dict[str, object], completed_at: str, evidence_refs: Sequence[str] = ()
+    operation: dict[str, object],
+    completed_at: str,
+    evidence_refs: Sequence[str] = (),
+    project: str | None = None,
 ) -> bytes:
     category = str(operation["category"])
     title = str(operation["title"])
@@ -2480,10 +2485,12 @@ def _render_page(
     body_section = str(operation.get("body_section") or "Lesson")
     evidence = operation["evidence"]
     assert isinstance(evidence, list)
+    project_line = f'project: "{_escape_yaml(project)}"\n' if project else ""
     text = (
         "---\n"
         f"type: {CATEGORY_SINGULAR[category]}\n"
         f'title: "{_escape_yaml(title)}"\n'
+        f"{project_line}"
         f'description: "{_escape_yaml(summary)}"\n'
         f"timestamp: {completed_at}\n"
         "confidence: medium\n"
@@ -2498,6 +2505,19 @@ def _render_page(
         + "\n"
     )
     return text.encode("utf-8")
+
+
+def _cited_project(
+    bindings: Sequence[Mapping[str, str]], inputs: CompileInputs, projects: NoteProjects
+) -> str | None:
+    """The project of the entries a new note cites, never the model's choice (ADR 0002)."""
+    citations = []
+    for binding in bindings:
+        reference = EvidenceRef.parse(binding["reference"])
+        source = _daily_for_evidence(inputs, reference.daily_id, reference.source_sha256)
+        if source is not None:
+            citations.append((source.sha256, source.content, reference.byte_start))
+    return projects.of_citations(citations)
 
 
 def _evidence_lines(
@@ -2745,14 +2765,16 @@ def _materialized_operations(
     """Render each planned page to prove its after-image and evidence bindings."""
     receipt_operations: list[dict[str, str]] = []
     evidence_bindings: list[dict[str, str]] = []
+    projects = NoteProjects.of_vault(ROOT)
     for planned in operations:
         assert isinstance(planned, dict)
         semantic, bindings = _validate_semantic_operation(
             _operation_content(planned), inputs
         )
         references = [binding["reference"] for binding in bindings]
+        project = _cited_project(bindings, inputs, projects)
         page = _with_claim_ledger(
-            _render_page(semantic, completed_at, references),
+            _render_page(semantic, completed_at, references, project),
             semantic.get("claims", []),
         )
         receipt_operations.append(
@@ -3340,8 +3362,7 @@ class _ApplyPlan:
         path = str(planned["path"])
         if path != f"knowledge/notes/{semantic['slug']}.md":
             raise ValueError("compile operation path does not match its slug")
-        references = [binding["reference"] for binding in bindings]
-        page = self._page_bytes(planned, semantic, references, path)
+        page = self._page_bytes(planned, semantic, bindings, path)
         if len(page) > MAX_AFTER_IMAGE_BYTES:
             raise ValueError("compiled page exceeds after-image limit")
         self.pending[path] = page
@@ -3355,14 +3376,16 @@ class _ApplyPlan:
         self,
         planned: Mapping[str, object],
         semantic: Mapping[str, object],
-        references: list[str],
+        bindings: list[dict[str, str]],
         path: str,
     ) -> bytes:
         claims = self._rendered_claims(semantic, path)
         target = _target_snapshot(self.inputs, path)
+        references = [binding["reference"] for binding in bindings]
         if planned["kind"] == "replace":
             return self._replaced_page(path, target, semantic, references, claims)
-        return self._created_page(path, target, semantic, references, claims)
+        project = _cited_project(bindings, self.inputs, self._note_projects)
+        return self._created_page(path, target, semantic, references, claims, project)
 
     def _replaced_page(
         self,
@@ -3389,16 +3412,22 @@ class _ApplyPlan:
         semantic: Mapping[str, object],
         references: list[str],
         claims: list[dict[str, object]],
+        project: str | None,
     ) -> bytes:
         if target is not None:
             raise ValueError("create target existed in snapshot")
-        rendered = _render_page(semantic, self.completed_at, references)
+        rendered = _render_page(semantic, self.completed_at, references, project)
         page = _with_claim_ledger(rendered, claims)
         self.changes.append(
             MarkdownChange.create(path, page, max_before_bytes=MAX_AFTER_IMAGE_BYTES)
         )
         self.preconditions[path] = "absent"
         return page
+
+    @cached_property
+    def _note_projects(self) -> NoteProjects:
+        """The map read once per publication, so every note of one commit sees the same."""
+        return NoteProjects.of_vault(ROOT)
 
     def _rendered_claims(
         self, semantic: Mapping[str, object], path: str

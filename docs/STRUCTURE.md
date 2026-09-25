@@ -579,6 +579,10 @@ or nonzero active state remains fail-closed.
 - `knowledge/notes/` — durable OKF pages, flat `<slug>.md`. All gitignored:
   the repository ships no memory (2026-09-10). The decision pages named in
   this document are the owner's private record; the contracts are stated here.
+  A note the compile creates from a registered repository's work carries
+  `project:` (after `type:` and `title:`), resolved from the cited daily entries
+  through the current project map, never chosen by the model; updates leave the
+  frontmatter as it is (`scripts/note_project.py`, ADR 0002).
 - `knowledge/projects/<project>/<repository>/` — the work state of one registered
   repository: append-only `journal.md` (sealed `journal.NNNNNN-NNNNNN.md` segments
   beside it), the generated `state.md` (frontmatter `project:` and `repository:`),
