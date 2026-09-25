@@ -252,3 +252,60 @@ def test_an_update_of_a_page_without_related_opens_the_section_before_the_ledger
     assert [claim["subject"] for claim in ledger["claims"]] == ["backend lease"]
     [_first, second] = [line for line in _log(vault).splitlines() if "compile completed" in line]
     assert "Dropped links" not in second
+
+
+LINKED_BODY = (
+    "The lease is renewed by [[alpha-queue]] and by [[knowledge/notes/alpha-queue|the queue]];\n"
+    "see [[missing-note|the missing guide]] and [[no-such-page]] and [[release-owner]].\n"
+    "Run `[[inline-code]]` to check.\n"
+    "```text\n"
+    "[[inside-fence]]\n"
+    "```\n"
+)
+CHECKED_BODY = (
+    "The lease is renewed by [[alpha-queue]] and by [[alpha-queue|the queue]];\n"
+    "see the missing guide and no such page and [[release-owner]].\n"
+    "Run `[[inline-code]]` to check.\n"
+    "```text\n"
+    "[[inside-fence]]\n"
+    "```\n"
+)
+
+
+def test_a_created_note_body_keeps_only_links_to_notes_that_exist(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _note(vault, "alpha-queue")
+    _day(vault, FIRST_DAY, FIRST_QUOTE)
+    linked = _operation("backend-lease", FIRST_DAY, FIRST_QUOTE, [])
+    linked["body_markdown"] = LINKED_BODY
+    _drafts(monkeypatch, [linked, _operation("release-owner", FIRST_DAY, FIRST_QUOTE, [])])
+
+    assert _compile() == 0
+
+    assert CHECKED_BODY in _page(vault, "backend-lease")
+    [entry] = [line for line in _log(vault).splitlines() if "compile completed" in line]
+    assert entry.endswith(
+        "Dropped links: [[missing-note|the missing guide]], [[no-such-page]] (from backend-lease)."
+    )
+
+
+def test_an_update_body_keeps_only_links_to_notes_that_exist(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _first_compile(vault, monkeypatch)
+    _day(vault, SECOND_DAY, SECOND_QUOTE)
+    update = _operation("backend-lease", SECOND_DAY, SECOND_QUOTE, ["[[nowhere]]"])
+    update["body_markdown"] = LINKED_BODY
+    _drafts(monkeypatch, [update])
+
+    assert _compile() == 0
+
+    page = _page(vault, "backend-lease")
+    [update_section] = re.findall(r"(?ms)^## Update \([^)]*\)\n(.*?)(?=^## )", page)
+    assert update_section.strip() == CHECKED_BODY.strip()
+    entries = [line for line in _log(vault).splitlines() if "compile completed" in line]
+    assert entries[1].endswith(
+        "Dropped links: [[nowhere]], [[missing-note|the missing guide]], [[no-such-page]]"
+        " (from backend-lease)."
+    )

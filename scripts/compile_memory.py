@@ -2274,7 +2274,8 @@ well-grounded claim to several redundant fragments. Never invent a changed state
 Return an object with operations in the semantic compile format.
 List related notes as bare [[slug]] links. Each must name the slug of a catalog
 entry or of a page created in this same plan; the compiler drops any other link and
-never links a page to itself.
+never links a page to itself. A link written in body_markdown follows the same rule;
+one naming no such note is turned into plain text.
 
 {_catalog_block(inputs)}
 Existing slugs are never renamed: a note keeps its slug for good.
@@ -3384,6 +3385,52 @@ def _checked_links(
     return kept, dropped
 
 
+# A code span: a run of backticks closed by a run of the same length.
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
+
+
+def _checked_body_links(body: str, known: frozenset[str]) -> tuple[str, list[str]]:
+    """The body with its links made bare, and those naming no note turned to text.
+
+    Code is content, so a link inside a fence or a code span is left as written.
+    """
+    dropped: list[str] = []
+
+    def checked(match: re.Match[str]) -> str:
+        target = _link_slug(match["target"])
+        rest = match["rest"] or ""
+        if target in known:
+            return f"[[{target}{rest}]]"
+        if match[0] not in dropped:
+            dropped.append(match[0])
+        _, bar, alias = rest.partition("|")
+        if bar and alias.strip():
+            return alias.strip()
+        return PurePosixPath(target).name.replace("-", " ").replace("_", " ")
+
+    def checked_prose(line: str) -> str:
+        parts: list[str] = []
+        position = 0
+        for span in _CODE_SPAN_RE.finditer(line):
+            parts.append(_PROPOSED_LINK_RE.sub(checked, line[position : span.start()]))
+            parts.append(span[0])
+            position = span.end()
+        parts.append(_PROPOSED_LINK_RE.sub(checked, line[position:]))
+        return "".join(parts)
+
+    lines: list[str] = []
+    fence = ""
+    for line in body.splitlines(keepends=True):
+        if fence:
+            fence = "" if _closes_fence(line, fence) else fence
+        elif (opening := _FENCE_RE.match(line)) is not None:
+            fence = opening.group(1)
+        else:
+            line = checked_prose(line)
+        lines.append(line)
+    return "".join(lines), dropped
+
+
 def _with_related_links(page: bytes, links: Mapping[str, str]) -> bytes:
     """Add links to the page's `## Related`, opening it before the ledger if absent."""
     heading = _RELATED_HEADING_RE.search(page)
@@ -4266,7 +4313,13 @@ class _ApplyPlan:
             raise ValueError("compile operation path does not match its slug")
         slug = str(semantic["slug"])
         links, dropped = _checked_links(semantic["related"], slug, self.known_slugs)
-        self.dropped_links.extend((slug, link) for link in dropped)
+        body, dropped_inline = _checked_body_links(
+            str(semantic["body_markdown"]), self.known_slugs
+        )
+        for link in [*dropped, *dropped_inline]:
+            if (slug, link) not in self.dropped_links:
+                self.dropped_links.append((slug, link))
+        semantic = {**semantic, "body_markdown": body}
         page = self._page_bytes(planned, semantic, bindings, path, links)
         if len(page) > MAX_AFTER_IMAGE_BYTES:
             raise ValueError("compiled page exceeds after-image limit")
