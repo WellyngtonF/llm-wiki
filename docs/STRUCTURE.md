@@ -553,7 +553,8 @@ or nonzero active state remains fail-closed.
 - `rules/` — 3 rule files (wiki-files, raw-files, output-files).
 - `integrations/` — thin host wiring: claude-code (settings.json) and codex
   (hooks.json). MCP is the common read/action interface.
-  Obsidian is an optional Markdown viewer and requires no bundled integration.
+  `integrations/obsidian/` holds viewer CSS only (the claims-ledger snippet);
+  nothing an agent needs depends on Obsidian (ADR 0003).
 - `benchmark/` — retrieval and frozen contradiction corpora/runners, including
   `run_benchmark.py`, `run_retrieval_v2.py`, `retrieval-v2.json`,
   `retrieval-v2.schema.json`, `legacy-60-v1.json`,

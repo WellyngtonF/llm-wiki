@@ -24,10 +24,16 @@ it loads.
 Before changing **structure, paths, env contracts, or runtime location**:
 1. Describe the proposed change in plain language (what, why, impact).
 2. Get the user's explicit "yes".
-3. Record the decision in `knowledge/notes/` (decision page) and update
-   `docs/STRUCTURE.md` (the canonical structure reference).
+3. Record the decision as a short, numbered ADR in `docs/adr/`, named
+   `NNNN-slug.md`, and update `docs/STRUCTURE.md` (the canonical structure
+   reference).
 4. Only then write code.
 Never improvise architectural decisions mid-task. When unsure, ask.
+
+Read `CONTEXT.md` first and use its vocabulary. ADRs and `CONTEXT.md` are
+public: keep private knowledge out of them (no real notes, project names or
+paths). This fork records product decisions there, not in `knowledge/notes/`
+(ADR 0001).
 
 ### Release / docs sync
 - Before any release or version bump: **sync `README.md` + `README.ru.md` +
@@ -317,8 +323,8 @@ writes to it. See `docs/research/2026-09-14-the-vault-log-is-private.md`.
   allowlist is wrong. Fix `.gitignore`, do not commit the page.
 
 ### When asked to "work on the memory system"
-- "Improve the system" → edit code, run tests, commit, push to
-  `Ekgardt/llm-wiki`.
+- "Improve the system" → edit code, run tests, commit, push to the fork
+  `WellyngtonF/llm-wiki`, not upstream `Ekgardt/llm-wiki` (ADR 0001).
 - "Show me my memory / what do I know about X" → read the vault: the same
   directory, in `knowledge/` and the runtime databases.
 

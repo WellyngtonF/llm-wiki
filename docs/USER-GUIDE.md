@@ -96,7 +96,9 @@ the nightly report then says `skipped (detached_head)`. Existing
 checkouts retain all remote settings unless `--protect-push` or `-ProtectPush` is explicit.
 The installer detects agents. It configures OpenCode, Codex, and Claude only when their
 configuration verifies.
-Obsidian remains a viewer-only integration.
+Obsidian is the reading surface, never a requirement: when `knowledge/.obsidian/`
+already exists, the install places the claims-ledger CSS snippet there (see
+[Reading the memory in Obsidian](#reading-the-memory-in-obsidian)).
 
 ### Installed-vault reliability check
 
@@ -154,7 +156,32 @@ remove v2 state by hand.
 | **Claude Code** | Configure MCP for reads/actions; the installer's ownership transaction writes the thin lifecycle hooks into `~/.claude/settings.json` and takes them back on uninstall. |
 | **OpenCode** | Configure MCP, then copy `scripts/llm-wiki-memory-opencode.js` for lifecycle events. |
 | **Codex CLI** | Configure MCP; on Windows add `. "$env:LLM_WIKI_ROOT\scripts\codex-memory-wrapper.ps1"` to `$PROFILE` for lifecycle capture. |
-| **Obsidian** | Optional Markdown viewer only: open the vault directly. No Obsidian UI is required. |
+| **Obsidian** | Optional reading surface: open `knowledge/` as the vault. Agents never need it. |
+
+### Reading the memory in Obsidian
+
+Open `knowledge/` as an Obsidian vault. Links are bare `[[slug]]` names, and
+Obsidian derives backlinks itself. Every note ends with a claims ledger: a
+`## Claims` heading followed by a one-line `json` block that the product reads.
+The snippet `llm-wiki-claims-ledger.css` collapses it so the note reads as prose.
+
+When `knowledge/.obsidian/` exists, `install.sh` and `install.ps1` copy the
+snippet to `knowledge/.obsidian/snippets/llm-wiki-claims-ledger.css`. They never
+create `.obsidian/`: open the vault in Obsidian once, then rerun the installer.
+A rerun leaves an up-to-date snippet as it is, and an uninstall removes it. The
+source is `integrations/obsidian/llm-wiki-claims-ledger.css`; copying it by hand
+works too.
+
+Enable it once: **Settings → Appearance → CSS snippets**, press the reload
+button, and switch on `llm-wiki-claims-ledger`.
+
+- **Reading view:** the heading is faint and the ledger shrinks to one dim row.
+  Hover it to read it in full.
+- **Live preview:** the ledger line is clipped to one dim row until the cursor
+  enters it. The editor does not expose heading text to CSS, so the rule matches
+  the ledger's shape: a level-2 heading followed directly by a one-line code
+  block. Another note section with that exact shape is dimmed the same way.
+- **Source mode** is left as it is.
 
 The same managed hooks also put the code graph where agents search (issue #24):
 a `Grep`/`Glob` in Claude Code, or an `rg`/`grep` in Codex, whose pattern names a
@@ -259,8 +286,9 @@ codes, and qualification evidence.
 
 ### Register scheduled maintenance
 
-The installers publish profile/environment, scheduler, and detected agent
-hook fragments through one resumable `run/install/` ownership transaction. Version 2
+The installers publish profile/environment, scheduler, detected agent
+hook fragments, and the Obsidian snippet (only when `knowledge/.obsidian/` exists)
+through one resumable `run/install/` ownership transaction. Version 2
 keeps the pre-first-install projection for uninstall and one latest committed update
 projection for explicit rollback. Recovery uses persisted historical definitions, not
 the current checkout templates. Rerun the native installer to reconcile owned state;
@@ -327,6 +355,9 @@ rerun_installer`. Resync an extra with `uv sync --locked --no-default-groups --i
 
 SUNDAY 04:00 (scheduler)
   Everything nightly does + OKF conformance sweep + archive stale + prune failed queue tasks
+  + consolidate each note with two or more updates into one page: the old prose goes
+  into a collapsed History block, the note ends with its one Claims ledger, and
+  decisions and retired notes are never rewritten
 ```
 
 Windows tasks run only while the current user is logged on. macOS LaunchAgents use

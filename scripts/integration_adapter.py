@@ -196,8 +196,7 @@ _PATCHED_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULT
 
 def _tool_payload(source: str, raw: Mapping[str, Any]) -> dict[str, str]:
     raw_name = _first_string(raw.get("tool_name"), raw.get("tool")) or ""
-    tool_input = raw.get("tool_input") if source != "opencode" else raw.get("input")
-    tool_input = tool_input if isinstance(tool_input, Mapping) else {}
+    tool_input = _tool_input(source, raw)
     target = (
         _first_string(
             tool_input.get("filePath"),
@@ -211,6 +210,12 @@ def _tool_payload(source: str, raw: Mapping[str, Any]) -> dict[str, str]:
         "tool_name": _TOOL_NAMES.get(raw_name.lower(), raw_name),
         "target": _tool_target(raw_name, target),
     }
+
+
+def _tool_input(source: str, raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """OpenCode's `tool.execute.after` input names the arguments `args`."""
+    names = ("tool_input",) if source != "opencode" else ("input", "args")
+    return next((raw[name] for name in names if isinstance(raw.get(name), Mapping)), {})
 
 
 def _tool_target(raw_name: str, target: str) -> str:
@@ -676,6 +681,68 @@ def _empty_delta() -> dict[str, object]:
     }
 
 
+_MAX_REPOSITORY_DEPTH = 64
+_MAX_GIT_FILE_BYTES = 4096
+_MAX_BRANCH_CHARS = 256
+_DETACHED_HEAD = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _read_git_file(path: Path) -> str | None:
+    try:
+        with path.open("rb") as stream:
+            return stream.read(_MAX_GIT_FILE_BYTES).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+
+
+def _git_directory(dot_git: Path) -> Path | None:
+    """`.git` itself, or the directory a worktree's `.git` pointer file names."""
+    if dot_git.is_dir():
+        return dot_git
+    text = _read_git_file(dot_git) or ""
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text[len("gitdir:") :].strip())
+    return gitdir if gitdir.is_absolute() else dot_git.parent / gitdir
+
+
+def _branch_from_head(head: str) -> str | None:
+    if head.startswith("ref:"):
+        ref = head[len("ref:") :].strip()
+        return ref.removeprefix("refs/heads/") or None
+    if _DETACHED_HEAD.fullmatch(head):
+        return f"detached at {head[:12]}"
+    return None
+
+
+def _repository_branch(worktree: str | None) -> str | None:
+    """The branch checked out where the event happened, read from the repository.
+
+    No host hook passes a branch, so all 1 976 journal events on the owner's vault
+    named it `unknown`. A worktree's `HEAD` lives in the git directory its pointer
+    file names, which is the worktree's own branch and not the main checkout's.
+    """
+    if not worktree:
+        return None
+    try:
+        start = Path(worktree).resolve()
+        for directory in (start, *start.parents)[:_MAX_REPOSITORY_DEPTH]:
+            dot_git = directory / ".git"
+            if dot_git.exists():
+                gitdir = _git_directory(dot_git)
+                head = _read_git_file(gitdir / "HEAD") if gitdir is not None else None
+                return _branch_from_head(head) if head else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _checkpoint_branch(envelope: EventEnvelope) -> str | None:
+    stated = _string(envelope.payload.get("branch"))
+    branch = stated or _repository_branch(envelope.worktree)
+    return _safe_string(branch[:_MAX_BRANCH_CHARS]) if branch else None
+
+
 def _checkpoint_event(
     envelope: EventEnvelope,
     slug: str,
@@ -696,7 +763,7 @@ def _checkpoint_event(
             "agent": _known(envelope.agent),
             "session": _known(envelope.session),
             "worktree": _known(root),
-            "branch": _known(_string(envelope.payload.get("branch"))),
+            "branch": _known(_checkpoint_branch(envelope)),
             "source_event": _known(envelope.source_event_id, envelope.event_id),
         },
         "trigger": str(_checkpoint_observation(envelope)["type"]),
@@ -779,11 +846,22 @@ def _derived_command(payload: Mapping[str, Any], at: object) -> list[dict[str, s
     return [_upsert(f"cmd:{target[:120]}", target, at)]
 
 
+def _reports_failure(envelope: EventEnvelope, payload: Mapping[str, Any]) -> bool:
+    """A severity, or the failure signal a host's failure hook sends.
+
+    No hook sets a severity: Claude's `PostToolUseFailure` passes
+    `--checkpoint-type significant_failure` and the OpenCode plugin forwards a
+    non-zero exit the same way, so reading the severity alone turned 46 failure
+    events on the owner's vault into 0 blockers.
+    """
+    return envelope.severity in {"error", "fatal"} or payload.get("significant_failure") is True
+
+
 def _derived_blocker(
     envelope: EventEnvelope, payload: Mapping[str, Any], at: object
 ) -> list[dict[str, str]]:
     """A failure the run actually hit, keyed by what failed rather than by when."""
-    if envelope.severity not in {"error", "fatal"}:
+    if not _reports_failure(envelope, payload):
         return []
     tool, target = _derived_target(payload)
     if not tool:
@@ -1647,6 +1725,26 @@ def _record_inflight_or_release(
         raise
 
 
+def _without_empty_checkpoint(
+    selected: list[dict[str, object]],
+    reducers: dict[str, CheckpointReducer],
+    decisions: list[CheckpointDecision | None],
+    decision: CheckpointDecision | None,
+):
+    """A batch that changes nothing is drained without a journal entry.
+
+    `session_end` bypasses the reducer's throttle whatever it carries, so every
+    Codex turn that did nothing appended a checkpoint of `checkpoint-none` closes.
+    The batch's events still leave the queue and stay observed, so a replay of one
+    of them appends nothing later, and no journal sequence is spent on it. A stated
+    close is content, so it is never skipped.
+    """
+    if decision is None or _any_pending_delta(selected):
+        return selected, reducers, decisions, decision
+    kept = [item if item is not None and item.maintenance else None for item in decisions]
+    return selected, reducers, kept, None
+
+
 def _drain_project_checkpoint_once(
     slug: str,
     queue_key: str,
@@ -1661,7 +1759,7 @@ def _drain_project_checkpoint_once(
     if plan is None:
         _release_pending_claims(queue_key, owner, state_lock_seconds)
         return False
-    selected, reducers, decisions, decision = plan
+    selected, reducers, decisions, decision = _without_empty_checkpoint(*plan)
     _record_inflight_or_release(queue_key, owner, selected, decision, state_lock_seconds)
     committed = _persist_or_release(
         slug,

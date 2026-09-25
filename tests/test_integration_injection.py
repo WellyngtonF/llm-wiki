@@ -490,6 +490,15 @@ def test_adapter_observes_same_envelope_once_before_durable_capture(monkeypatch,
     assert calls[1][1] is calls[0][1]
 
 
+# These lifecycle events test the queue, retry and dedupe machinery, so each states
+# a change: a checkpoint whose delta is empty is not appended at all.
+_STATED_CHANGE = {
+    "project_delta": {
+        "current_task": {"id": "task-1", "action": "upsert", "value": "Ship login"}
+    }
+}
+
+
 @pytest.mark.parametrize(
     ("event_type", "raw", "reason"),
     [
@@ -521,7 +530,7 @@ def test_repeated_unidentified_lifecycle_occurrences_checkpoint_separately(
     monkeypatch.setattr(integration_adapter, "update_state", update)
     monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
     monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
-    event_raw = {"session_id": "s1", "cwd": "C:/project", **raw}
+    event_raw = {"session_id": "s1", "cwd": "C:/project", **raw, **_STATED_CHANGE}
 
     first = integration_adapter.normalize_occurrence_event("claude", event_type, event_raw)
     second = integration_adapter.normalize_occurrence_event("claude", event_type, event_raw)
@@ -574,7 +583,7 @@ def test_same_normalized_occurrence_is_checkpointed_once(monkeypatch):
     envelope = integration_adapter.normalize_occurrence_event(
         "claude",
         "pre_compact",
-        {"session_id": "s1", "cwd": "C:/project", "reason": "auto"},
+        {"session_id": "s1", "cwd": "C:/project", "reason": "auto", **_STATED_CHANGE},
     )
 
     integration_adapter._observe_project_checkpoint(envelope)
@@ -778,7 +787,7 @@ def test_failed_checkpoint_does_not_persist_event_dedupe_and_retry_succeeds(monk
     envelope = integration_adapter.normalize_event(
         "codex",
         "session_end",
-        {"session_id": "s1", "cwd": "C:/project", "event_id": "end-1"},
+        {"session_id": "s1", "cwd": "C:/project", "event_id": "end-1", **_STATED_CHANGE},
         occurred_at=integration_adapter.datetime.fromisoformat("2026-07-13T12:00:00+00:00"),
     )
     monkeypatch.setattr(integration_adapter, "update_state", update)
@@ -804,6 +813,7 @@ def _session_end_events(adapter, project_dir: Path, count: int) -> list:
                 "session_id": "session-1",
                 "cwd": str(project_dir),
                 "event_id": f"event-{index}",
+                **_STATED_CHANGE,
             },
         )
         for index in range(count)
@@ -878,10 +888,12 @@ def test_project_lease_busy_event_remains_pending_until_next_observation(monkeyp
     monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
     monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
     first = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "one", **_STATED_CHANGE},
     )
     second = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "two"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "two", **_STATED_CHANGE},
     )
 
     with pytest.raises(ProjectLeaseBusy):
@@ -929,7 +941,8 @@ def test_reducer_commit_failure_releases_pending_claim_for_retry(monkeypatch):
     monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
     monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
     event = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "one", **_STATED_CHANGE},
     )
 
     with pytest.raises(TimeoutError, match="commit state busy"):

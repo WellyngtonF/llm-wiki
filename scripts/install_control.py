@@ -38,6 +38,7 @@ PROFILE_START = b"# >>> LLM-Wiki installer >>>"
 PROFILE_END = b"# <<< LLM-Wiki installer <<<"
 CRON_START = b"# LLM-Wiki-cron-start"
 CRON_END = b"# LLM-Wiki-cron-end"
+OBSIDIAN_SNIPPET_NAME = "llm-wiki-claims-ledger.css"
 _SCHEMA_ROOT = Path(__file__).resolve().parent / "schemas"
 _MANIFEST_SCHEMA = _SCHEMA_ROOT / "install-manifest-v1.json"
 _TRANSACTION_SCHEMA = _SCHEMA_ROOT / "install-transaction-v1.json"
@@ -4690,6 +4691,26 @@ def _codex_hooks_destination(home: Path) -> Path:
     return home / ".codex" / "hooks.json"
 
 
+def _obsidian_config_exists(root: Path) -> bool:
+    return (root / "knowledge" / ".obsidian").is_dir()
+
+
+def obsidian_snippet_resource(root: Path) -> ManagedResource:
+    """Own the claims-ledger CSS snippet inside the vault's Obsidian configuration.
+
+    Selected only when that configuration already exists: Obsidian is a viewer the
+    owner may use, never something the install brings into being (ADR 0003).
+    """
+    source = root / "integrations" / "obsidian" / OBSIDIAN_SNIPPET_NAME
+    return file_resource(
+        resource_id="obsidian-snippet",
+        kind="obsidian_snippet",
+        path=root / "knowledge" / ".obsidian" / "snippets" / OBSIDIAN_SNIPPET_NAME,
+        desired=_read_regular_managed_file(source),
+        mode=0o644,
+    )
+
+
 def _recorded_config_existed(
     metadata: Mapping[str, Mapping[str, object]], resource_id: str
 ) -> bool | None:
@@ -4853,6 +4874,7 @@ def build_install_resources(
     opencode_plugin: bool = False,
     claude_settings: bool = False,
     codex_hooks: bool = False,
+    obsidian_snippet: bool = False,
     ownership_metadata: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[ManagedResource]:
     metadata = ownership_metadata or {}
@@ -4877,6 +4899,7 @@ def build_install_resources(
             state_root,
             metadata,
         ),
+        *([obsidian_snippet_resource(root)] if obsidian_snippet else []),
     ]
 
 
@@ -4900,6 +4923,7 @@ def _requested_resources(args: argparse.Namespace, backend: str) -> list[Managed
         opencode_plugin=args.opencode_plugin,
         claude_settings=args.claude_settings,
         codex_hooks=args.codex_hooks,
+        obsidian_snippet=_obsidian_config_exists(args.root.resolve()),
         ownership_metadata=None,
     )
 
@@ -5045,6 +5069,7 @@ def _resources_from_record(
         opencode_plugin="opencode-plugin" in identifiers,
         claude_settings="claude-user-settings" in identifiers,
         codex_hooks="codex-user-hooks" in identifiers,
+        obsidian_snippet="obsidian-snippet" in identifiers,
         ownership_metadata=_record_metadata(record),
     )
 

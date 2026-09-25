@@ -225,11 +225,17 @@ export const LlmWikiMemoryPlugin = async ({ client, directory }) => {
     "session.idle": handleSessionIdle,
   };
 
-  async function recordToolUse(input) {
+  async function recordToolUse(input, output) {
     const id = sessionId(input);
     const changed = CHANGING_TOOLS.has(toolName(input));
     if (id && changed) dirtySessions.add(id);
     const signals = changed ? { changed: true, dirty: true, significant: true } : {};
+    // OpenCode has no failure hook: a tool that throws never reaches this one, and a
+    // shell command that failed arrives here with its exit code in the metadata.
+    const exit = output?.metadata?.exit;
+    if (typeof exit === "number" && exit !== 0) {
+      Object.assign(signals, { significant_failure: true, checkpoint_type: "significant_failure" });
+    }
     await forwardLifecycle("post_tool_use", { ...(input || {}), ...signals });
   }
 
@@ -257,7 +263,7 @@ export const LlmWikiMemoryPlugin = async ({ client, directory }) => {
     },
 
     "tool.execute.after": async (input, output) => {
-      await recordToolUse(input);
+      await recordToolUse(input, output);
       await appendGraphHint(input, output);
     },
 
