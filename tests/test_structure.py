@@ -536,7 +536,7 @@ STAGE_TWO_RUNTIME_PATHS = (
     "cache/claims.sqlite3",
     "scripts/schemas/",
     "knowledge/daily/receipts/",
-    "knowledge/projects/<slug>/journal.md",
+    "knowledge/projects/<project>/<repository>/",
     "knowledge/daily/archive/YYYY-MM/bag-",
 )
 

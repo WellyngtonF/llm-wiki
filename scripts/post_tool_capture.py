@@ -110,17 +110,24 @@ def _read_hook_input() -> dict:
 
 
 def _compute_slug_from_cwd(cwd: str) -> str:
-    projects_dir = ROOT / "knowledge" / "projects"
+    """`<project>/<repository>` for a registered repository, `-` for anything else."""
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
-        from session_start_project_state import _compute_slug  # type: ignore
+        from work_state import daily_tag  # type: ignore
 
-        return _compute_slug(Path(cwd).resolve(), projects_dir)
+        return daily_tag(ROOT, cwd)
     except Exception:  # noqa: BLE001
-        try:
-            return Path(cwd).resolve().name.lower().replace(" ", "-")
-        except Exception:  # noqa: BLE001
-            return "unknown"
+        return "-"
+
+
+def _dedupe_scope(slug: str, cwd: str) -> str:
+    """The tag, or for unregistered work the directory, so two of them never coalesce."""
+    if slug != "-":
+        return slug
+    try:
+        return str(Path(cwd).resolve())
+    except Exception:  # noqa: BLE001
+        return str(cwd)
 
 
 def _file_target(tool_input: dict) -> str:
@@ -311,7 +318,7 @@ def _tool_envelope(
         payload={"tool_name": tool_name, "target": redact_secrets(target)},
         agent=_optional_string(hook.get("agent")),
         session=_optional_string(source_session),
-        project=slug if source_cwd else None,
+        project=slug if source_cwd and slug != "-" else None,
         worktree=_optional_string(source_cwd),
         severity=_optional_string(hook.get("severity")),
         parent_event_id=_optional_string(hook.get("parent_event_id")),
@@ -332,11 +339,12 @@ def _capture_tool(hook: dict) -> None:
         return
     tool_name, target, source_session, source_cwd, cwd = context
     slug = _compute_slug_from_cwd(cwd)
+    scope = _dedupe_scope(slug, cwd)
     envelope = _tool_envelope(
         hook, tool_name, target, source_session, source_cwd, slug
     )
     operation_id = _claim_tool_operation(
-        slug,
+        scope,
         tool_name,
         envelope.payload["target"],
         source_event_id=envelope.source_event_id,
@@ -352,7 +360,7 @@ def _capture_tool(hook: dict) -> None:
         agent=envelope.agent or "unknown",
     )
     _finish_tool_operation(
-        appended, slug, tool_name, envelope.payload["target"], operation_id
+        appended, scope, tool_name, envelope.payload["target"], operation_id
     )
 
 

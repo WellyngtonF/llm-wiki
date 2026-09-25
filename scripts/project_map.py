@@ -13,12 +13,20 @@ it is the main checkout of one of its repositories:
 The parser tolerates hand edits: prose, blank lines, other headings, bullets in
 backticks, either slash, trailing slashes, and (on Windows) any case. Edits are
 line edits, so whatever the owner wrote around the entries survives them.
-Nothing here reads the map for journals or work state yet; that is issue #14.
+
+Each registered repository's work state lives at
+`knowledge/projects/<project>/<repository>/` (`work_state`), so an edit keeps the
+folders in step in the same transaction as the map: attaching a repository to
+another project moves its folder, renaming a project moves the project's folder,
+and detaching a repository or removing a project deletes the work-state folder.
+The transaction is undoable for the undo window like any other. Notes are never
+touched.
 """
 from __future__ import annotations
 
 import os
 import re
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -449,13 +457,13 @@ def resolve_repository(vault: Path, directory: object) -> Path:
     A subfolder or a worktree names the same repository as its main checkout; a
     directory in no git repository, the vault, or the home directory names none.
     """
-    from session_start_project_state import NotAProject, project_identity
+    from session_start_project_state import NotAProject, working_repository
 
     path = _absolute_directory(directory)
     if not path.is_dir():
         raise ProjectMapError("directory_not_found", "directory does not exist")
     try:
-        _slug, repository = project_identity(path.resolve(), Path(vault) / "knowledge" / "projects")
+        repository = working_repository(path.resolve(), Path(vault) / "knowledge" / "projects")
     except NotAProject as error:
         raise ProjectMapError("not_a_repository", str(error)) from error
     if not (repository / ".git").exists():
@@ -563,16 +571,250 @@ _EDITS = {
 }
 
 
+# --- work-state folders ----------------------------------------------------------
+
+PROJECTS_RELATIVE = "knowledge/projects"
+
+
+@dataclass
+class _FolderPlan:
+    """The work-state files an edit moves or deletes, as vault-relative paths."""
+
+    moves: list[tuple[str, str]] = field(default_factory=list)
+    deletes: list[str] = field(default_factory=list)
+    content: dict[str, bytes] = field(default_factory=dict)
+    written: dict[str, bytes] = field(default_factory=dict)
+    moved_folders: list[tuple[str, str]] = field(default_factory=list)
+    deleted_folders: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return bool(self.moves or self.deletes)
+
+
+def _tree_files(vault: Path, folder: str) -> list[str]:
+    """Every Markdown file under a folder of `knowledge/projects/`, links not followed."""
+    root = Path(vault) / folder
+    if root.is_symlink() or not root.is_dir():
+        return []
+    found = []
+    for directory, subdirectories, files in os.walk(root, followlinks=False):
+        subdirectories[:] = [
+            name for name in subdirectories if not (Path(directory) / name).is_symlink()
+        ]
+        for name in files:
+            path = Path(directory) / name
+            if path.suffix == ".md" and not path.is_symlink() and path.is_file():
+                found.append(path.relative_to(vault).as_posix())
+    return sorted(found)
+
+
+def _read_file(vault: Path, relative: str) -> bytes:
+    from bounded_io import MAX_KNOWLEDGE_PAGE_BYTES
+
+    with (Path(vault) / relative).open("rb") as stream:
+        content = stream.read(MAX_KNOWLEDGE_PAGE_BYTES + 1)
+    if len(content) > MAX_KNOWLEDGE_PAGE_BYTES:
+        raise ProjectMapError("folder_too_large", f"{relative} is too large to move")
+    return content
+
+
+def _restated(vault: Path, source: str, destination: str, plan: _FolderPlan) -> None:
+    """The moved `state.md`, rendered again under the folder's new name."""
+    from project_journal import parse_journal_events, rendered_state
+    from work_state import recorded_key
+
+    journal = f"{source}/journal.md"
+    state = f"{destination}/state.md"
+    if journal not in plan.content or state not in plan.written:
+        return
+    key = recorded_key(Path(vault) / source)
+    if key is None:
+        return
+    try:
+        events = parse_journal_events(key, plan.content[journal])
+    except (ValueError, RuntimeError):
+        return
+    if events:
+        plan.written[state] = rendered_state(
+            events, folder=destination.removeprefix(f"{PROJECTS_RELATIVE}/")
+        )
+
+
+def _plan_move(vault: Path, source: str, destination: str, plan: _FolderPlan) -> None:
+    files = _tree_files(vault, source)
+    if not files:
+        return
+    plan.moved_folders.append((source, destination))
+    for relative in files:
+        target = destination + relative[len(source):]
+        content = _read_file(vault, relative)
+        plan.content[relative] = content
+        plan.written[target] = content
+        plan.moves.append((relative, target))
+
+
+def _is_repository_journal(relative: str) -> bool:
+    """`knowledge/projects/<project>/<repository>/journal.md`, not a flat older one."""
+    parts = relative.removeprefix(f"{PROJECTS_RELATIVE}/").split("/")
+    return len(parts) == 3 and parts[-1] == "journal.md"
+
+
+def _restate_moved(vault: Path, plan: _FolderPlan) -> None:
+    for relative, target in plan.moves:
+        if _is_repository_journal(relative) and _is_repository_journal(target):
+            _restated(
+                vault,
+                relative.removesuffix("/journal.md"),
+                target.removesuffix("/journal.md"),
+                plan,
+            )
+
+
+def _plan_delete(vault: Path, folder: str, plan: _FolderPlan) -> None:
+    files = _tree_files(vault, folder)
+    if not files:
+        return
+    plan.deleted_folders.append(folder)
+    for relative in files:
+        plan.content[relative] = _read_file(vault, relative)
+        plan.deletes.append(relative)
+
+
+def _placed_by_repository(vault: Path, parsed: ProjectMap) -> dict[str, str]:
+    from work_state import placements
+
+    return {
+        repository_key(placement.repository): f"{PROJECTS_RELATIVE}/{placement.relative}"
+        for placement in placements(vault, project_map=parsed)
+    }
+
+
+def _folder_plan(
+    vault: Path, before: ProjectMap, after: ProjectMap, outcome: _Outcome, action: str
+) -> _FolderPlan:
+    """What the map edit does to the work-state folders."""
+    plan = _FolderPlan()
+    if action == "rename":
+        old = outcome.extra["renamed_from"]
+        _plan_move(
+            vault, f"{PROJECTS_RELATIVE}/{old}", f"{PROJECTS_RELATIVE}/{outcome.project}", plan
+        )
+    elif action == "remove":
+        _plan_delete(vault, f"{PROJECTS_RELATIVE}/{outcome.project}", plan)
+    else:
+        placed_after = _placed_by_repository(vault, after)
+        for key, folder in _placed_by_repository(vault, before).items():
+            destination = placed_after.get(key)
+            if destination is None:
+                _plan_delete(vault, folder, plan)
+            elif destination != folder:
+                _plan_move(vault, folder, destination, plan)
+    _restate_moved(vault, plan)
+    return plan
+
+
+def _folder_changes(plan: _FolderPlan) -> tuple[list, dict[str, object]]:
+    from markdown_transaction import ABSENT, MarkdownChange, sha256_bytes
+
+    changes = []
+    preconditions: dict[str, object] = {}
+    for source, target in plan.moves:
+        changes.append(MarkdownChange.create(target, plan.written[target]))
+        changes.append(MarkdownChange.delete(source))
+        preconditions[target] = ABSENT
+        preconditions[source] = sha256_bytes(plan.content[source])
+    for source in plan.deletes:
+        changes.append(MarkdownChange.delete(source))
+        preconditions[source] = sha256_bytes(plan.content[source])
+    return changes, preconditions
+
+
+def _prune_empty(vault: Path, folders: list[str]) -> None:
+    """Remove directories a failed edit created before anything was written into them."""
+    projects = (Path(vault) / PROJECTS_RELATIVE).resolve()
+    for folder in folders:
+        root = Path(vault) / folder
+        for directory in [root, *root.parents]:
+            if directory.resolve() == projects or projects not in directory.resolve().parents:
+                break
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+
+
+def _prune_expired_empty(vault: Path, now: float | None = None) -> None:
+    """Remove the folders a move or delete emptied, once their undo window has passed.
+
+    A committed move or delete leaves its directories in place: the undo puts
+    the files back into the very directories they left, and refuses a directory
+    made again. A directory that has stayed empty past the window can no longer
+    be needed by any undo.
+    """
+    from markdown_transaction import UNDO_RETENTION_DAYS
+
+    projects = Path(vault) / PROJECTS_RELATIVE
+    if not projects.is_dir():
+        return
+    cutoff = (time.time() if now is None else now) - UNDO_RETENTION_DAYS * 86400
+    # Read every age first: removing a child touches its parent's mtime.
+    aged = []
+    for directory, _subdirectories, _files in os.walk(projects, topdown=False):
+        path = Path(directory)
+        if path == projects or path.is_symlink() or "_template" in path.relative_to(projects).parts:
+            continue
+        try:
+            if path.stat().st_mtime < cutoff:
+                aged.append(path)
+        except OSError:
+            continue
+    for path in aged:
+        try:
+            if not any(path.iterdir()):
+                path.rmdir()
+        except OSError:
+            continue
+
+
+def _work_state_report(plan: _FolderPlan, transaction_id: str | None) -> dict:
+    if not plan:
+        return {}
+    report: dict[str, object] = {
+        "moved": [{"from": source, "to": target} for source, target in plan.moved_folders],
+        "deleted": list(plan.deleted_folders),
+        "transaction": transaction_id,
+        "undo": (
+            "The move or deletion is one transaction: it can be undone for two days "
+            "with the doctor tool's `transaction-undo` action (`repair: true`) on "
+            f"`{transaction_id}`. The emptied folder is removed after that."
+        ),
+    }
+    return {"work_state": report}
+
+
+def _work_state_message(plan: _FolderPlan) -> str:
+    parts = []
+    if plan.moved_folders:
+        moved = ", ".join(target for _source, target in plan.moved_folders)
+        parts.append(f"work state moved to {moved}")
+    if plan.deleted_folders:
+        deleted = ", ".join(plan.deleted_folders)
+        parts.append(f"work state deleted from {deleted} (undoable for two days)")
+    return "; ".join(parts)
+
+
 def _write_map(
     vault: Path,
     state_root: Path,
     before: bytes | None,
     after: bytes,
     action: str,
+    plan: _FolderPlan,
     *,
     deadline: float,
     cancelled: Callable[[], bool] | None,
-) -> None:
+) -> str:
+    """Write the map and its folder changes as one transaction; its id."""
     from markdown_transaction import (
         ABSENT,
         MarkdownChange,
@@ -588,19 +830,29 @@ def _write_map(
     else:
         change = MarkdownChange.replace(MAP_RELATIVE_PATH, after, max_before_bytes=MAX_MAP_BYTES)
         expected = sha256_bytes(before)
+    folder_changes, folder_preconditions = _folder_changes(plan)
+    destinations = [target for _source, target in plan.moved_folders]
     try:
+        for _source, target in plan.moves:
+            coordinator.ensure_target_parent(target)
         record = coordinator.prepare(
-            [change],
+            [change, *folder_changes],
             operation_id=f"project-map:{action}:{uuid.uuid4().hex}",
-            preconditions={MAP_RELATIVE_PATH: expected},
+            preconditions={MAP_RELATIVE_PATH: expected, **folder_preconditions},
             deadline=deadline,
             cancelled=cancelled,
         )
     except PreconditionChangedError as error:
+        _prune_empty(vault, destinations)
         raise ProjectMapError(
-            "map_changed", "the project map changed while it was being edited; try again"
+            "map_changed",
+            "the project map or a work-state folder changed while it was being edited; try again",
         ) from error
+    except Exception:
+        _prune_empty(vault, destinations)
+        raise
     coordinator.apply(record.id, deadline=deadline, cancelled=cancelled)
+    return record.id
 
 
 def manage_project(
@@ -631,20 +883,36 @@ def manage_project(
     edit = _EDITS.get(action)
     if edit is None:
         raise ProjectMapError("unknown_action", f"unknown action: {action}")
+    _prune_expired_empty(vault)
     draft = _Draft(_NEW_MAP if before is None else _decoded(before))
+    parsed_before = draft.parsed()
     outcome = edit(vault, draft, request)
+    plan = _FolderPlan()
+    transaction_id = None
     if outcome.changed:
         after = draft.text().encode("utf-8")
-        _write_map(
-            vault, state_root, before, after, action, deadline=deadline, cancelled=cancelled
+        plan = _folder_plan(vault, parsed_before, draft.parsed(), outcome, action)
+        transaction_id = _write_map(
+            vault,
+            state_root,
+            before,
+            after,
+            action,
+            plan,
+            deadline=deadline,
+            cancelled=cancelled,
         )
+    message = outcome.message
+    if plan:
+        message = f"{message}; {_work_state_message(plan)}"
     return {
         "status": "ok",
         "action": action,
         "project": outcome.project,
         "changed": outcome.changed,
-        "message": outcome.message,
+        "message": message,
         **outcome.extra,
+        **_work_state_report(plan, transaction_id),
         "map": MAP_RELATIVE_PATH,
         "projects": draft.parsed().as_data(),
     }

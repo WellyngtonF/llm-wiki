@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from memory_state import ROOT, STATE_ROOT  # noqa: E402
 from project_journal import ProjectLeaseBusy, ProjectStore, _timestamp  # noqa: E402
+from work_state import operator_store  # noqa: E402
 
 
 def journal_sequences(store: ProjectStore, project: str) -> set[int]:
@@ -128,7 +129,7 @@ def main() -> int:
         "--list-only", action="store_true", help="name the gaps and change nothing"
     )
     args = parser.parse_args()
-    store = ProjectStore(Path(args.vault), Path(args.state_root))
+    store = operator_store(Path(args.vault), Path(args.state_root))
     if args.list_only:
         print(json.dumps(_survey(store, args.project), indent=1))
         return 0

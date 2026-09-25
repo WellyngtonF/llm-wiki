@@ -110,7 +110,7 @@ from integration_adapter import (  # noqa: E402
 )
 from integration_config_backup import publish_configuration  # noqa: E402
 from secret_redact import redact_secrets  # noqa: E402
-from session_start_project_state import _compute_slug  # type: ignore  # noqa: E402
+from work_state import placement_of  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,9 +208,21 @@ def _run_script(name: str, project_dir: Path, stdin_text: str = "") -> subproces
         return subprocess.CompletedProcess([sys.executable, str(script)], 124, "", "")
 
 
-def _state_path(project_dir: Path) -> tuple[str, Path]:
-    slug = _compute_slug(project_dir, PROJECTS_DIR)
-    return slug, PROJECTS_DIR / slug / "state.md"
+def _state_path(project_dir: Path) -> tuple[str | None, Path | None]:
+    """`<project>/<repository>` and its `state.md`; neither for unregistered work."""
+    try:
+        placement = placement_of(ROOT, project_dir)
+    except (OSError, ValueError):
+        return None, None
+    return placement.relative, placement.directory(ROOT) / "state.md"
+
+
+def _exists(path: Path | None) -> bool:
+    return path is not None and path.exists()
+
+
+def _shown(path: Path | None) -> str | None:
+    return str(path) if path is not None else None
 
 
 def _invalid_hook() -> ValueError:
@@ -828,18 +840,18 @@ def _script_payload(stdout: str) -> dict[str, Any]:
 
 
 def _project_state_report(
-    project_dir: Path, slug: str, state_path: Path, context: str
+    project_dir: Path, slug: str | None, state_path: Path | None, context: str
 ) -> dict[str, Any]:
     return {
         "cwd": str(project_dir),
         "slug": slug,
-        "state_path": str(state_path),
-        "state_exists": state_path.exists(),
+        "state_path": _shown(state_path),
+        "state_exists": _exists(state_path),
         "additional_context": context,
     }
 
 
-def _print_project_state(slug: str, state_path: Path, context: str) -> None:
+def _print_project_state(slug: str | None, state_path: Path | None, context: str) -> None:
     print(f"Slug: {slug}")
     print(f"State path: {state_path}")
     print()
@@ -875,15 +887,15 @@ def command_state_path(args: argparse.Namespace) -> int:
     out = {
         "cwd": str(project_dir),
         "slug": slug,
-        "state_path": str(state_path),
-        "state_exists": state_path.exists(),
+        "state_path": _shown(state_path),
+        "state_exists": _exists(state_path),
     }
     if args.json:
         print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
         print(f"Slug: {slug}")
         print(f"State path: {state_path}")
-        print(f"Exists: {state_path.exists()}")
+        print(f"Exists: {_exists(state_path)}")
     return 0
 
 

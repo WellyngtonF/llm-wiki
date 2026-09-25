@@ -563,7 +563,11 @@ def test_integration_uses_unpacked_project_handoff_items(monkeypatch):
         parent_id="project:demo",
         priority_class="handoff",
     )
-    monkeypatch.setattr(integration_adapter, "ProjectStore", lambda *args: object())
+    from work_state import Placement
+
+    monkeypatch.setattr(
+        integration_adapter, "work_state_store", lambda *args, **kwargs: (object(), "demo")
+    )
     monkeypatch.setattr(
         integration_adapter,
         "recover_project_handoff",
@@ -579,7 +583,9 @@ def test_integration_uses_unpacked_project_handoff_items(monkeypatch):
 
     monkeypatch.setattr(context_compiler, "compile_context_items", compile_spy)
 
-    handoff_items = integration_adapter._recover_project_handoff("demo", Path("demo"))
+    handoff_items = integration_adapter._recover_project_handoff(
+        Placement("demo", Path("demo"), "demo")
+    )
     rendered = integration_adapter._append_context([], handoff_items)
 
     assert handoff_items == (handoff_item,)

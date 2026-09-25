@@ -33,11 +33,11 @@ from project_journal import (
     SESSION_START_RECOVERY_SECONDS,
     CheckpointDecision,
     CheckpointReducer,
-    ProjectStore,
     recover_project_handoff,
 )
 from secret_redact import redact_secrets
-from session_start_project_state import project_identity
+from session_start_project_state import working_repository
+from work_state import Placement, placement_of, work_state_store
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DELEGATE_TIMEOUT_SECONDS = 10
@@ -1512,7 +1512,7 @@ def _write_project_checkpoint(
     checkpoint = _merge_pending_checkpoints(selected, decision)
     event_id = str(selected[-1]["event_id"])
     args = (slug, checkpoint, f"lifecycle:{event_id[:16]}")
-    store = ProjectStore(ROOT, STATE_ROOT)
+    store, _key = work_state_store(ROOT, STATE_ROOT)
     if writer_wait_seconds is None:
         store.checkpoint(*args)
         return
@@ -1858,10 +1858,16 @@ def _observe_project_checkpoint(
     *,
     writer_wait_seconds: float | None = None,
 ) -> None:
-    """Durably enqueue one envelope and drain its project's ordered queue."""
-    slug, project_dir = _project_context(envelope)
-    if not slug or project_dir is None:
+    """Durably enqueue one envelope and drain its repository's ordered queue.
+
+    Only a registered repository has a journal; any other directory enqueues
+    nothing and writes nothing (ADR 0002).
+    """
+    placement, _repository = _project_context(envelope)
+    if placement is None:
         return
+    _store, slug = work_state_store(ROOT, STATE_ROOT, placement)
+    project_dir = placement.repository
     session_key = envelope.session or "unknown"
     state_key = f"{slug}:{session_key}"
     pending_events = _pending_checkpoints(envelope, slug, state_key, repository=project_dir)
@@ -2017,15 +2023,24 @@ def _observe_checkpoint_fail_open(envelope: EventEnvelope) -> None:
         _log_checkpoint_error(exc)
 
 
-def _project_context(envelope: EventEnvelope) -> tuple[str | None, Path | None]:
-    """(slug, repository root) of the directory the event came from."""
+def _project_context(envelope: EventEnvelope) -> tuple[Placement | None, Path | None]:
+    """(registered placement, repository root) of the directory the event came from.
+
+    The repository is the main checkout of any directory that could be a project,
+    registered or not; the placement is there only when the project map lists it.
+    """
     directory = _observed_directory(envelope)
     if directory is None:
         return None, None
+    projects = ROOT / "knowledge" / "projects"
     try:
-        return project_identity(directory, ROOT / "knowledge" / "projects")
+        repository = working_repository(directory, projects)
     except (OSError, ValueError):
         return None, None
+    try:
+        return placement_of(ROOT, repository), repository
+    except (OSError, ValueError):
+        return None, repository
 
 
 def _observed_directory(envelope: EventEnvelope) -> Path | None:
@@ -2397,16 +2412,16 @@ def _restrict_file_permissions(path: Path) -> None:
 
 def _record_activity(
     envelope: EventEnvelope,
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
 ) -> bool:
-    if not slug or project_dir is None:
+    if placement is None or project_dir is None:
         return False
     heartbeat = _run_delegate(
         "heartbeat_record.py",
         {
-            "slug": slug,
-            "projectRoot": str(project_dir),
+            "slug": placement.project,
+            "projectRoot": str(placement.repository),
             "reason": envelope.payload.get("reason") or envelope.event_type,
             "sessionId": envelope.session,
         },
@@ -2478,15 +2493,15 @@ def _catch_up_missed_nightly() -> None:
         pass
 
 
-def _recover_project_handoff(slug: str | None, project_dir: Path | None) -> Sequence[Any]:
-    if not slug or project_dir is None:
+def _recover_project_handoff(placement: Placement | None) -> Sequence[Any]:
+    if placement is None:
         return ()
     try:
-        store = ProjectStore(ROOT, STATE_ROOT)
+        store, key = work_state_store(ROOT, STATE_ROOT, placement)
         return recover_project_handoff(
             store,
-            slug,
-            project_root=project_dir,
+            key,
+            project_root=placement.repository,
             render_context=False,
         ).items
     except Exception as exc:  # noqa: BLE001
@@ -2616,9 +2631,9 @@ def _append_context(
     return _compile_context(items, trailing_newline=trailing_newline)
 
 
-def _ingest_result(slug: str | None, payload: Mapping[str, Any]) -> dict[str, Any]:
+def _ingest_result(placement: Placement | None, payload: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "slug": slug,
+        "slug": placement.relative if placement is not None else None,
         "heartbeat_recorded": False,
         "daily_log_written": False,
         "flush_spawned": False,
@@ -2644,20 +2659,20 @@ def _write_session_start_debug(context: object) -> None:
 def _ingest_session_start(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
     trigger: str | None,
 ) -> None:
-    result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+    result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
     maintenance_pid = spawn_detached(
         [sys.executable, str(SCRIPTS_DIR / "integration_adapter.py"), "--maintenance"]
     )
     result["maintenance_scheduled"] = maintenance_pid is not None
     result["context"] = _append_context(
-        build_session_start_context(slug),
-        _recover_project_handoff(slug, project_dir),
+        build_session_start_context(placement.project if placement else None),
+        _recover_project_handoff(placement),
         trailing_newline=True,
         code_graph=_code_graph_reminder(_observed_directory(envelope) if project_dir else None),
     )
@@ -2667,7 +2682,7 @@ def _ingest_session_start(
 def _ingest_user_prompt(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -2684,7 +2699,7 @@ def _ingest_user_prompt(
         {
             "text": payload["prompt"],
             "session_id": envelope.session or "unknown",
-            "slug": slug or "unknown",
+            "slug": placement.project if placement else "unknown",
             "trigger": f"{envelope.agent or 'unknown'}-user-message",
         },
         project_dir=project_dir,
@@ -2694,7 +2709,7 @@ def _ingest_user_prompt(
 def _ingest_post_tool(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -2899,11 +2914,15 @@ def _capture_occurred_at(envelope: EventEnvelope) -> str | None:
 
 def _capture_source_record(
     envelope: EventEnvelope,
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
     text: str,
 ) -> dict[str, object]:
     evidence = [{"role": "transcript", "parts": [{"type": "text", "text": text}]}]
+    # Registered work names its project and, as the checkpoint does, the main
+    # checkout; the daily block reads both. Unregistered work names no project.
+    project = placement.project if placement is not None else None
+    worktree = str(placement.repository) if placement is not None else envelope.worktree
     return {
         "source_occurrence_id": envelope.event_id,
         "source_event_id": envelope.source_event_id or envelope.event_id,
@@ -2911,8 +2930,8 @@ def _capture_source_record(
         "host": envelope.agent or "unknown",
         "event": envelope.event_type,
         "session": _capture_nullable_text(envelope.session, "capture session"),
-        "project_slug": _capture_nullable_text(slug, "capture project slug"),
-        "worktree": _capture_nullable_text(envelope.worktree, "capture worktree"),
+        "project_slug": _capture_nullable_text(project, "capture project slug"),
+        "worktree": _capture_nullable_text(worktree, "capture worktree"),
         "trigger": _capture_nullable_text(trigger, "capture trigger"),
         "checkpoint_reason": _capture_nullable_text(
             envelope.payload.get("reason"), "capture checkpoint reason"
@@ -2961,7 +2980,7 @@ def _smaller_evidence_limit(limit: int, encoded_size: int) -> int:
 def _fitting_capture_record(
     envelope: EventEnvelope,
     payload: Mapping[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
 ) -> tuple[dict[str, object], bytes] | None:
     """The record and its bytes, with evidence cut until the encoded record fits.
@@ -2976,7 +2995,7 @@ def _fitting_capture_record(
         if text is None:
             return None
         record, encoded = _encoded_capture_record(
-            _capture_source_record(envelope, slug, trigger, text)
+            _capture_source_record(envelope, placement, trigger, text)
         )
         if len(encoded) <= MAX_CAPTURE_INTENT_BYTES:
             return record, encoded
@@ -3115,14 +3134,14 @@ def _publish_capture_files_and_task(
 def _publish_durable_capture_intent(
     envelope: EventEnvelope,
     payload: Mapping[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
 ) -> str | None:
     from markdown_transaction import active_markdown_coordinator
     from memory_queue import active_memory_queue
     from reliable_memory import sha256_bytes
 
-    fitted = _fitting_capture_record(envelope, payload, slug, trigger)
+    fitted = _fitting_capture_record(envelope, payload, placement, trigger)
     if fitted is None:
         return None
     record, encoded = fitted
@@ -3173,9 +3192,9 @@ def _publish_intent_from_payload(
 ) -> str | None:
     envelope = normalize_event(source, event_type, dict(payload))
     canonical = _canonical_capture_payload(envelope)
-    slug, _project_dir = _project_context(envelope)
+    placement, _project_dir = _project_context(envelope)
     trigger = _fallback_trigger(event_type, canonical)
-    return _publish_durable_capture_intent(envelope, canonical, slug, trigger)
+    return _publish_durable_capture_intent(envelope, canonical, placement, trigger)
 
 
 def capture_running_session(source: str, payload: Mapping[str, Any]) -> str | None:
@@ -3241,13 +3260,13 @@ def _wake_capture_worker(result: dict[str, Any], intent_id: str | None) -> bool:
 def _capture_precompact(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     intent_id: str | None,
 ) -> bool:
     if not payload.get("transcript_path"):
-        result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+        result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
         return False
     return _wake_capture_worker(result, intent_id)
 
@@ -3255,7 +3274,7 @@ def _capture_precompact(
 def _ingest_precompact(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3265,11 +3284,11 @@ def _ingest_precompact(
     intent_id = None
     try:
         intent_id = _publish_durable_capture_intent(
-            envelope, payload, slug, _string(payload.get("trigger"))
+            envelope, payload, placement, _string(payload.get("trigger"))
         )
         _record_capture_intent(result, intent_id)
         _capture_precompact(
-            envelope, payload, slug, project_dir, result, intent_id
+            envelope, payload, placement, project_dir, result, intent_id
         )
     finally:
         _cleanup_durable_transcript(transient_path, intent_id)
@@ -3326,7 +3345,7 @@ def _tag_session_end(
 def _capture_session_end_without_transcript(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3335,8 +3354,8 @@ def _capture_session_end_without_transcript(
     if force_stub:
         _tag_session_end(payload, project_dir, result)
         return False
-    if slug and project_dir:
-        result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+    if placement and project_dir:
+        result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
     return False
 
 
@@ -3366,7 +3385,7 @@ def _transcript_present(payload: Mapping[str, Any]) -> bool:
 def _capture_session_end(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3376,14 +3395,14 @@ def _capture_session_end(
         _tag_session_end(payload, project_dir, result)
         return _wake_capture_worker(result, intent_id)
     return _capture_session_end_without_transcript(
-        envelope, payload, slug, project_dir, result, force_stub
+        envelope, payload, placement, project_dir, result, force_stub
     )
 
 
 def _ingest_session_end(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3394,11 +3413,11 @@ def _ingest_session_end(
     intent_id = None
     try:
         intent_id = _publish_durable_capture_intent(
-            envelope, payload, slug, _string(payload.get("trigger"))
+            envelope, payload, placement, _string(payload.get("trigger"))
         )
         _record_capture_intent(result, intent_id)
         _capture_session_end(
-            envelope, payload, slug, project_dir, result, force_stub, intent_id
+            envelope, payload, placement, project_dir, result, force_stub, intent_id
         )
     finally:
         _cleanup_durable_transcript(transient_path, intent_id)
@@ -3413,8 +3432,8 @@ def ingest_event(
     """Apply shared lifecycle persistence policy to a normalized envelope."""
     _observe_checkpoint_fail_open(envelope)
     payload = _canonical_capture_payload(envelope)
-    slug, project_dir = _project_context(envelope)
-    result = _ingest_result(slug, payload)
+    placement, project_dir = _project_context(envelope)
+    result = _ingest_result(placement, payload)
     handlers = {
         "session_start": _ingest_session_start,
         "user_prompt": _ingest_user_prompt,
@@ -3424,7 +3443,7 @@ def ingest_event(
     }
     handler = handlers.get(envelope.event_type)
     if handler is not None:
-        handler(envelope, payload, slug, project_dir, result, force_stub, trigger)
+        handler(envelope, payload, placement, project_dir, result, force_stub, trigger)
     return result
 
 

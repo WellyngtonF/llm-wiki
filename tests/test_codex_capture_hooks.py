@@ -23,11 +23,14 @@ PATCH = "*** Begin Patch\n*** Update File: src/app.py\n@@\n-old\n+new\n*** End P
 @pytest.fixture
 def adapter(monkeypatch):
     import integration_adapter
+    from work_state import Placement
 
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(integration_adapter, "_observe_checkpoint_fail_open", lambda envelope: None)
     monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda envelope: ("demo", Path("/work/demo"))
+        integration_adapter,
+        "_project_context",
+        lambda envelope: (Placement("demo", Path("/work/demo"), "demo"), Path("/work/demo")),
     )
     monkeypatch.setattr(
         integration_adapter,

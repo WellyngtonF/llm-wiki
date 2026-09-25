@@ -1,9 +1,9 @@
-"""User-level SessionEnd hook — tag the day's daily log with the project slug.
+"""User-level SessionEnd hook — tag the day's daily log with the session's project.
 
 Fires at session end from any cwd. Appends a minimal marker entry to
-`knowledge/daily/YYYY-MM-DD.md` identifying the project slug and session
-metadata. This lets cross-project sessions leave breadcrumbs in the
-shared daily log.
+`knowledge/daily/YYYY-MM-DD.md` with the session metadata and, when the
+directory belongs to a registered repository, its project and main checkout.
+This lets cross-project sessions leave breadcrumbs in the shared daily log.
 
 Companion to the adapter's own session-end capture, which publishes the durable
 capture intent the worker classifies. To avoid duplicate work and noisy logs, this
@@ -22,8 +22,8 @@ Daily entry format (one append per session end):
     ## [HH:MM:SS] session-end | <session_id>
     - Trigger: `<reason>`
     - Agent: `<canonical agent>`
-    - Project slug: `<slug>`
-    - Project root: `<absolute path>`
+    - Project: `<project>`                      (registered repositories only)
+    - Repository: `<main checkout path>`        (registered repositories only)
     - Transcript: `<transcript path>`
 
 This format mirrors the existing project-level entries so downstream
@@ -35,7 +35,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import sys
 import traceback
 from contextlib import suppress
@@ -48,18 +47,9 @@ if hasattr(sys.stdout, "reconfigure"):
     except (AttributeError, io.UnsupportedOperation):
         pass
 
-SLUG_UNSAFE_RE = re.compile(r"[\s_/\\:*?\"<>|]+")
-
 from daily_log_append import append_deadline, locked_append  # noqa: E402
 from event_envelope import canonical_agent  # noqa: E402
 from secret_redact import redact_secrets  # noqa: E402
-
-# Match the Source line that session_start_project_state.py writes into
-# newly-created state.md pages. Used to find the slug that SessionStart
-# already assigned to this project, so SessionEnd tags with the same one.
-STATE_SOURCE_LINE_RE = re.compile(
-    r"^- Project root:\s*`([^`]+)`", re.MULTILINE
-)
 
 
 def _resolve_state_root() -> Path | None:
@@ -92,76 +82,23 @@ def _safe_write_error(err: str) -> None:
         pass
 
 
-def _base_slug(project_dir: Path) -> str:
-    """Sanitized parent folder name, or `root` fallback."""
-    base = project_dir.name or "root"
-    slug = base.lower()
-    slug = SLUG_UNSAFE_RE.sub("-", slug)
-    slug = slug.strip("-")
-    if not slug or slug in {".", ".."}:
-        return "root"
-    return slug
+def _location_lines(project_dir: Path, vault: Path) -> str:
+    """`Project:` and `Repository:` for a registered repository; nothing otherwise.
 
-
-def _lookup_existing_slug(project_dir: Path, projects_dir: Path) -> str | None:
-    """If SessionStart already created a state.md for this project, return
-    the slug it chose (may be collision-resolved to e.g. `backend-your-app`).
-
-    Returns None if no matching state.md is found — caller falls back to
-    the base slug. This keeps SessionStart and SessionEnd in sync without
-    duplicating the collision-resolution logic.
+    A session outside every registered repository still leaves its entry, and
+    the entry names no project (ADR 0002). A failed lookup is read as unregistered:
+    a missing tag is better than a session-end hook that raises.
     """
-    if not projects_dir.is_dir():
-        return None
     try:
-        current_norm = project_dir.resolve().as_posix().lower()
-    except (OSError, ValueError):
-        return None
-    for slug_dir in projects_dir.iterdir():
-        if _recorded_root(slug_dir) == current_norm:
-            return slug_dir.name
-    return None
+        from work_state import placement_of
 
-
-def _recorded_root(slug_dir: Path) -> str | None:
-    """The normalized `Project root` this slug's state.md records, or None."""
-    if not slug_dir.is_dir() or slug_dir.name.startswith("_"):
-        return None
-    state_md = slug_dir / "state.md"
-    if not state_md.is_file():
-        return None
-    try:
-        body = state_md.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-    return _normalized_source_line(body)
-
-
-def _normalized_source_line(body: str) -> str | None:
-    """The recorded root from a state.md body, resolved and lowercased."""
-    match = STATE_SOURCE_LINE_RE.search(body)
-    if not match:
-        return None
-    try:
-        return Path(match.group(1).strip()).resolve().as_posix().lower()
-    except (OSError, ValueError):
-        return None
-
-
-def _compute_slug(project_dir: Path, projects_dir: Path) -> str:
-    """Return the slug for this project — the one SessionStart picked if
-    available, else the base slug.
-
-    SessionEnd's slug is just a tag in the shared daily log; we don't
-    create files, so collision detection here would just duplicate logic.
-    Instead, defer to whatever SessionStart already recorded. Falls back
-    to base slug when SessionStart hasn't run (unusual) or when the
-    folder has no marker (SessionStart would have no-op'd).
-    """
-    existing = _lookup_existing_slug(project_dir, projects_dir)
-    if existing:
-        return existing
-    return _base_slug(project_dir)
+        placement = placement_of(vault, project_dir)
+    except Exception:  # noqa: BLE001
+        return ""
+    return (
+        f"- Project: `{placement.project}`\n"
+        f"- Repository: `{placement.repository}`\n"
+    )
 
 
 def _owning_checkout(project_dir: Path, vault: Path) -> Path:
@@ -261,7 +198,7 @@ def _transcript_line(transcript: str) -> str:
     return f"- Transcript: `{transcript}`\n"
 
 
-def _session_entry(payload: dict, slug: str, project_dir: Path, now: datetime) -> str:
+def _session_entry(payload: dict, location: str, now: datetime) -> str:
     session_id = str(payload.get("session_id", "unknown"))
     reason = str(payload.get("reason", "other"))
     transcript = str(payload.get("transcript_path", ""))
@@ -270,8 +207,7 @@ def _session_entry(payload: dict, slug: str, project_dir: Path, now: datetime) -
         f"## [{now.strftime('%H:%M:%S')}] session-end | {session_id}\n"
         f"- Trigger: `{reason}`\n"
         f"- Agent: `{agent}`\n"
-        f"- Project slug: `{slug}`\n"
-        f"- Project root: `{project_dir}`\n"
+        f"{location}"
         f"{_transcript_line(transcript)}\n"
     )
     return redact_secrets(entry)
@@ -295,11 +231,10 @@ def _tag_session() -> bool:
         return False
     payload = _read_payload()
     now = datetime.now()
-    slug = _compute_slug(project_dir, vault / "knowledge" / "projects")
     today_file = daily_dir / f"{now.strftime('%Y-%m-%d')}.md"
     _append_entry(
         today_file,
-        _session_entry(payload, slug, project_dir, now),
+        _session_entry(payload, _location_lines(project_dir, vault), now),
         operation_id=_session_operation_id(payload),
     )
     return True

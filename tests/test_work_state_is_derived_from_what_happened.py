@@ -8,7 +8,8 @@ throttle whatever it carries; and all 1 976 journal events named the branch
 `docs/specs/2026-09-24-readable-memory.md`.
 
 Every test here drives the adapter as a host hook does and reads the files a person
-or the next agent reads: `journal.md` and `state.md`.
+or the next agent reads: `journal.md` and `state.md`. Only a registered repository
+has work state (issue #14), so each checkout a test makes is registered first.
 """
 
 from __future__ import annotations
@@ -45,12 +46,20 @@ def vault(tmp_path, monkeypatch) -> Path:
     return root
 
 
+def _register(directory: Path) -> Path:
+    """List the directory in the project map, as the owner does by hand."""
+    project_map = Path(integration_adapter.ROOT) / "knowledge" / "projects" / "project-map.md"
+    listed = project_map.read_text(encoding="utf-8") if project_map.exists() else "## product-a\n\n"
+    project_map.write_text(f"{listed}- {directory.as_posix()}\n", encoding="utf-8")
+    return directory
+
+
 def _repository(tmp_path: Path, head: str = "ref: refs/heads/main\n") -> Path:
-    """A checkout with its own `.git/HEAD`; the name is unique per test run."""
+    """A registered checkout with its own `.git/HEAD`; the name is unique per test run."""
     repository = tmp_path / f"product-a-{uuid.uuid4().hex[:8]}"
     (repository / ".git").mkdir(parents=True)
     (repository / ".git" / "HEAD").write_text(head, encoding="utf-8")
-    return repository
+    return _register(repository)
 
 
 def _hook(argv: list[str], raw: dict) -> None:
@@ -63,7 +72,7 @@ def _claude(event: str, raw: dict, *extra: str) -> None:
 
 
 def _project_files(vault: Path) -> list[Path]:
-    return sorted((vault / "knowledge" / "projects").glob("*/journal.md"))
+    return sorted((vault / "knowledge" / "projects").glob("*/*/journal.md"))
 
 
 def _journal_events(vault: Path) -> list[dict]:
@@ -344,6 +353,7 @@ def test_a_detached_head_is_named_by_its_commit(vault, tmp_path) -> None:
 def test_a_directory_outside_any_repository_records_an_unknown_branch(vault, tmp_path) -> None:
     plain = tmp_path / f"notes-{uuid.uuid4().hex[:8]}"
     plain.mkdir()
+    _register(plain)
 
     _edit_in(plain)
 

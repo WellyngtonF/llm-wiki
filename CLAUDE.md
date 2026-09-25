@@ -445,8 +445,8 @@ When asked to compile or ingest new material:
 | `gap` | `knowledge/notes/<slug>.md` | Not-yet-written knowledge. 90-day. |
 | `skill` | `skills/<name>/SKILL.md` | Agent workflow. Never archives. |
 | `rule` | `rules/<name>.md` | File-handling policy. Never archives. |
-| `project-state` | `knowledge/projects/<slug>/state.md` | Per-project handoff. Never archives. |
-| `project-context` | `knowledge/projects/<slug>/` | Per-project context. Never archives. |
+| `project-state` | `knowledge/projects/<project>/<repository>/state.md` | A registered repository's generated work state. Never archives. |
+| `project-context` | `knowledge/projects/project-map.md`, `knowledge/projects/<project>/` | The project map and per-project context. Never archives. |
 | `bootstrap-context` | `knowledge/notes/<slug>.md` | Seed context for new sessions. Never archives. |
 
 Pages live **flat** as `<slug>.md` under `knowledge/notes/` (the compile

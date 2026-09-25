@@ -39,8 +39,17 @@ def test_a_new_event_does_not_widen_the_batch_a_failed_commit_left(monkeypatch):
             checkpoints.append(event["occurrence_id"])
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    from work_state import Placement
+
+    # The adapter writes a registered repository's work state through its store (issue #14).
+    monkeypatch.setattr(
+        integration_adapter, "work_state_store", lambda *args, **kwargs: (Store(), "demo")
+    )
+    monkeypatch.setattr(
+        integration_adapter,
+        "_project_context",
+        lambda event: (Placement("demo", ROOT, "demo"), ROOT),
+    )
     # Each turn states a change: a turn that changed nothing appends no checkpoint at all.
     delta = {"current_task": {"id": "task-1", "action": "upsert", "value": "Ship login"}}
     one = integration_adapter.normalize_event(

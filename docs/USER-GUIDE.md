@@ -471,8 +471,21 @@ Prose, blank lines, either slash and trailing slashes are fine, and edits made
 through the tool keep what you wrote around the entries. `doctor` reports the
 entries it cannot use: a duplicate project, a repository listed in two projects,
 a path that does not exist or is not a repository's main checkout, and the
-reserved name. For now the map only records the registrations; journals and work
-state do not read it yet.
+reserved name.
+
+Each registered repository keeps its work state, what agents were last doing
+there, in `knowledge/projects/<project>/<repository>/`: an append-only `journal.md`
+and the `state.md` generated from it, which session start hands to the next agent.
+Work in a directory that belongs to no registered repository (web research, file
+chores) creates nothing under `knowledge/projects/`; it is still captured into the
+daily log and compiled as before, and its daily entries name no project.
+
+The folders follow the map. Attaching a repository to another project moves its
+folder, renaming a project moves the project's folder, and detaching a repository
+or removing a project deletes its work state. Your notes are never touched. Each
+change is one transaction, and the tool's answer names it: you can undo it for two
+days with the `doctor` tool (`action=transaction-undo`, `repair=true`, the
+transaction id). The emptied folders are removed once that window has passed.
 
 ### Compiling knowledge manually
 
@@ -500,12 +513,12 @@ uv run python scripts/doctor.py                            # local health; --rep
 uv run --locked --no-sync python scripts/sync_memory.py --check --json  # read-only check
 ```
 
-Per-project brief — the decisions, patterns and open threads of one project,
-written to `knowledge/projects/<slug>/context.md`:
+Per-project brief — the decisions, patterns and open threads of one registered
+project, written to `knowledge/projects/<project>/context.md`:
 
 ```bash
-uv run python scripts/build_context.py --slug my-project           # print it
-uv run python scripts/build_context.py --slug my-project --write   # write the page
+uv run python scripts/build_context.py my-project           # print it
+uv run python scripts/build_context.py my-project --write   # write the page
 ```
 
 ### Bounded synchronization
@@ -867,7 +880,7 @@ at most 0.04 (`docs/research/2026-09-10-cross-lingual-memory-world-practice.md`)
 | `knowledge/daily/` | KNOWLEDGE | Append-only session logs (private) |
 | `knowledge/notes/` | KNOWLEDGE | Durable OKF pages |
 | `knowledge/projects/project-map.md` | KNOWLEDGE | Private project map: registered projects and their repositories |
-| `knowledge/projects/<slug>/` | KNOWLEDGE | Append-only journal.md + projected state.md |
+| `knowledge/projects/<project>/<repository>/` | KNOWLEDGE | A registered repository's append-only journal.md + projected state.md |
 | `knowledge/raw/` | KNOWLEDGE | Immutable sources |
 | `knowledge/inbox/` | KNOWLEDGE | Unprocessed staging |
 | `knowledge/feedback/` | KNOWLEDGE | Correction candidates |

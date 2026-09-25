@@ -1,9 +1,12 @@
-"""User-level SessionStart hook — inject per-project state.md.
+"""User-level SessionStart hook — inject a registered repository's work state.
 
 This hook fires on every Claude Code session start, regardless of cwd. It
-resolves the current project's slug, reads (or creates) the corresponding
-`knowledge/projects/<slug>/state.md`, and emits its content as additionalContext
-so Claude starts the session knowing where we left off in this project.
+resolves the working directory to its repository's main checkout, and when the
+project map registers that repository it reads (or creates) the repository's
+`knowledge/projects/<project>/<repository>/state.md` and emits it as
+additionalContext, so Claude starts the session knowing where we left off. A
+directory that belongs to no registered repository gets nothing and creates
+nothing (ADR 0002).
 
 Companion to the project-level `session_start_context.py` hook (which
 injects general memory context when cwd=vault). Both can fire in the same
@@ -18,16 +21,16 @@ Contract (hard requirements):
     * Output: a single JSON object on stdout with the shape Claude Code
       expects (see schema: hookSpecificOutput.additionalContext).
 
-Slug rule (mirrors `~/.claude/CLAUDE.md` and
-[[Global Multi-Project Migration Plan]]):
+Repository folder rule (`repository_folder`; collisions are scoped within
+the repository's project folder):
     0. CLAUDE_PROJECT_DIR (or cwd) first resolves to its repository's main
        checkout (`repository_identity`); every step below reads that.
     1. Base: lowercase basename of the main checkout with
        whitespace and unsafe chars replaced by hyphens. Non-ASCII chars
        (e.g. Cyrillic) are preserved — NTFS and Obsidian both handle them.
-    2. On collision (another project recorded a different root under the
-       same slug): append parent-of-parent (e.g. `backend` + `your-app`
-       → `backend-your-app`).
+    2. On collision (another repository of the project recorded a different
+       root under the same folder): append parent-of-parent (e.g. `backend` +
+       `your-app` → `backend-your-app`).
     3. On further collision: parse the origin URL from `.git/config` and
        use `owner-repo`.
     4. On further collision: append the grandparent folder name.
@@ -50,16 +53,19 @@ import traceback
 import unicodedata
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TYPE_CHECKING
 
 from markdown_transaction import mutate_knowledge, stable_operation_id
 from project_journal import (
-    ProjectStore,
     legacy_state_project_root,
     portable_slug,
     recover_project_handoff,
 )
 from repository_identity import repository_root
 from secret_redact import redact_secrets
+
+if TYPE_CHECKING:
+    from work_state import Placement
 
 # Force utf-8 on stdout (Windows cp1252 mojibakes Cyrillic otherwise).
 if hasattr(sys.stdout, "reconfigure"):
@@ -293,9 +299,16 @@ def _path_hash_suffix(project_dir: Path) -> str:
     return h[:PATH_HASH_SUFFIX_LEN]
 
 
-def _slug_owns_dir(slug: str, project_dir: Path, projects_dir: Path) -> bool:
-    """True ONLY if `projects_dir/slug/state.md` either doesn't exist or
+def _slug_owns_dir(
+    slug: str, project_dir: Path, parent: Path, projects_dir: Path | None = None
+) -> bool:
+    """True ONLY if `parent/slug/state.md` either doesn't exist or
     explicitly records `project_dir` as its Project root.
+
+    `parent` is the folder the candidate would live in, a project's folder, so
+    the collision rules are scoped within the project. `projects_dir` is the
+    vault's `knowledge/projects/`, which bounds the repository walk; it defaults
+    to `parent`.
 
     Strict (hardened per colleague review — "state.md without Project root
     line"): a state.md that exists but lacks a parseable
@@ -310,7 +323,7 @@ def _slug_owns_dir(slug: str, project_dir: Path, projects_dir: Path) -> bool:
     missing its Source line will still be read correctly — we just won't
     WRITE over it. The read path in main() doesn't consult this function.
     """
-    state_path = projects_dir / slug / "state.md"
+    state_path = parent / slug / "state.md"
     if not state_path.exists():
         return True  # unused slug — free to take
     try:
@@ -328,7 +341,7 @@ def _slug_owns_dir(slug: str, project_dir: Path, projects_dir: Path) -> bool:
     # recorded before repository identity existed may name a subfolder or a
     # worktree; it still owns the slug when it is the same repository.
     try:
-        recorded_repository = repository_of(Path(recorded).resolve(), projects_dir)
+        recorded_repository = repository_of(Path(recorded).resolve(), projects_dir or parent)
         recorded_norm = recorded_repository.resolve().as_posix().lower()
         current_norm = project_dir.resolve().as_posix().lower()
     except (OSError, ValueError):
@@ -336,41 +349,39 @@ def _slug_owns_dir(slug: str, project_dir: Path, projects_dir: Path) -> bool:
     return recorded_norm == current_norm
 
 
-def _compute_slug(project_dir: Path, projects_dir: Path) -> str:
-    """Compute the slug for a project, resolving collisions.
+def working_repository(directory: Path, projects_dir: Path) -> Path:
+    """The main checkout of the repository an agent is working in.
 
-    Strategy (documented in `knowledge/notes/Global Multi-Project Migration
-    Plan.md`):
-      1. Parent folder name, sanitized.
-      2. On collision: parent + parent-of-parent (e.g. `backend-your-app`).
-      3. On further collision: git `owner-repo` from origin remote.
-      4. On further collision: base + path-hash suffix (always unique).
-
-    The directory resolves to its repository's main checkout before any of
-    this runs (`project_identity`), so a subfolder or a worktree does not mint
-    a project of its own.
-
-    Returns the first candidate that either doesn't exist or already
-    belongs to the repository (same recorded Project root).
+    A subfolder or a worktree resolves to its main checkout (ADR 0002). Raises
+    `NotAProject` when the repository is the vault, inside it, a temporary
+    directory or the home directory. Whether it belongs to a project is the
+    project map's answer, not this one (`work_state.placement_of`).
     """
-    return project_identity(project_dir, projects_dir)[0]
-
-
-def project_identity(project_dir: Path, projects_dir: Path) -> tuple[str, Path]:
-    """(slug, repository root) of the directory an agent is working in.
-
-    Raises `NotAProject` when the repository is the vault, inside it, a
-    temporary directory or the home directory.
-    """
-    repository = repository_of(project_dir, projects_dir)
+    repository = repository_of(directory, projects_dir)
     _require_project_candidate(repository, projects_dir)
+    return repository
+
+
+def repository_folder(repository: Path, parent: Path, projects_dir: Path) -> str:
+    """The folder a repository's work state takes inside `parent`, its project's folder.
+
+    Collisions are resolved among the project's own repositories only:
+      1. The main checkout's folder name, sanitized.
+      2. On collision: folder + parent (e.g. `backend-your-app`).
+      3. On further collision: git `owner-repo` from the origin remote.
+      4. On further collision: folder + grandparent.
+      5. Last resort: folder + path-hash suffix (always unique).
+
+    Returns the first candidate that either doesn't exist or already belongs to
+    the repository (same recorded Project root).
+    """
     base = _base_slug(repository)
     for cand in _slug_candidates(repository, base)[:MAX_SLUG_CANDIDATES]:
-        if _slug_owns_dir(cand, repository, projects_dir):
-            return cand, repository
-    # All predictable slugs are taken by other projects — fall back to
+        if _slug_owns_dir(cand, repository, parent, projects_dir):
+            return cand
+    # All predictable slugs are taken by other repositories — fall back to
     # a deterministic hash suffix. Guaranteed unique per path.
-    return f"{base}-{_path_hash_suffix(repository)}", repository
+    return f"{base}-{_path_hash_suffix(repository)}"
 
 
 def repository_of(project_dir: Path, projects_dir: Path) -> Path:
@@ -567,20 +578,16 @@ def _marker_present(project_dir: Path, marker: str) -> bool:
     return any(project_dir.glob(f"*{marker}"))
 
 
-def _render_new_state(state_template: Path, slug: str, project_dir: Path) -> str:
-    """Return template content with placeholders filled for a new project."""
+def _render_new_state(state_template: Path, placement: Placement, project_dir: Path) -> str:
+    """Return template content with placeholders filled for a new repository."""
     tmpl = state_template.read_text(encoding="utf-8")
-    filled = (
+    return (
         tmpl
-        .replace("<project-slug>", slug)
+        .replace("<project>/<repository>", placement.relative)
+        .replace("<project>", placement.project)
+        .replace("<repository>", placement.folder)
         .replace("<absolute-path>", str(project_dir))
-        .replace("<Project Name>", slug)
-        .replace("<what this project is, in one sentence>",
-                 f"(new project at `{project_dir}`, pending description)")
-        .replace("<absolute path>", str(project_dir))
-        .replace("<remote url>", "(unknown — set manually if applicable)")
     )
-    return filled
 
 
 def _clip(text: str, limit: int) -> str:
@@ -613,7 +620,7 @@ def _clip(text: str, limit: int) -> str:
         return error.failure.render(max_bytes=limit)
 
 
-def _build_context(state_path: Path, slug: str, is_new: bool) -> str:
+def _build_context(state_path: Path, label: str, is_new: bool) -> str:
     """Build the additionalContext payload around the state.md content."""
     try:
         body = state_path.read_text(encoding="utf-8")
@@ -621,9 +628,9 @@ def _build_context(state_path: Path, slug: str, is_new: bool) -> str:
         return f"(project state at `{state_path}` unreadable: {type(e).__name__})"
 
     header = (
-        f"# Per-project state — `{slug}`\n"
+        f"# Per-project state — `{label}`\n"
         f"\n"
-        f"(Auto-injected from `knowledge/projects/{slug}/state.md`"
+        f"(Auto-injected from `knowledge/projects/{label}/state.md`"
         + (" — freshly created for this project." if is_new else ".")
         + ")\n\n"
     )
@@ -640,7 +647,11 @@ def main() -> int:
 
 
 def _run_session_start() -> int:
-    """1. Locate the vault. 2. Identify the project. 3. Emit its context."""
+    """1. Locate the vault. 2. Find the registered repository. 3. Emit its context.
+
+    A directory that resolves to no registered repository emits nothing and
+    writes nothing (ADR 0002).
+    """
     vault_root = os.environ.get("LLM_WIKI_ROOT")
     if not vault_root:
         return _emit_empty()
@@ -649,60 +660,61 @@ def _run_session_start() -> int:
     if not projects_dir.is_dir():
         _safe_write_error(f"projects dir missing: {projects_dir}")
         return _emit_empty()
-    project_dir = repository_of(_resolve_project_dir(), projects_dir)
-    slug = _compute_slug(project_dir, projects_dir)
-    return _emit_project_context(vault, projects_dir, project_dir, slug)
+    from work_state import placement_of
+
+    try:
+        placement = placement_of(vault, _resolve_project_dir())
+    except NotAProject:
+        return _emit_empty()
+    return _emit_project_context(vault, placement)
 
 
-def _emit_project_context(
-    vault: Path, projects_dir: Path, project_dir: Path, slug: str
-) -> int:
-    """The recovered handoff when there is one, else the project's own state."""
+def _emit_project_context(vault: Path, placement: Placement) -> int:
+    """The recovered handoff when there is one, else the repository's own state."""
+    from work_state import work_state_store
+
     state_root = _resolve_state_root()
     if state_root is None:
         return _emit_empty()
+    store, key = work_state_store(vault, state_root, placement)
     # Recover reservations even before the first journal file is published.
     handoff = recover_project_handoff(
-        ProjectStore(vault, state_root),
-        slug,
+        store,
+        key,
         max_chars=MAX_CONTEXT_CHARS,
-        project_root=project_dir,
+        project_root=placement.repository,
     )
-    journal_path = projects_dir / slug / "journal.md"
+    journal_path = placement.directory(vault) / "journal.md"
     if journal_path.is_file() or handoff.degraded or handoff.legacy:
         return _emit(handoff.context)
-    return _emit_state_context(vault, projects_dir, project_dir, slug)
+    return _emit_state_context(vault, placement)
 
 
-def _emit_state_context(
-    vault: Path, projects_dir: Path, project_dir: Path, slug: str
-) -> int:
+def _emit_state_context(vault: Path, placement: Placement) -> int:
     """Ensure state.md exists — creation is gated on project markers."""
-    state_path = projects_dir / slug / "state.md"
+    state_path = placement.directory(vault) / "state.md"
     if state_path.exists():
-        return _emit(_build_context(state_path, slug, False))
-    if not _create_project_state(vault, projects_dir, project_dir, slug, state_path):
+        return _emit(_build_context(state_path, placement.relative, False))
+    if not _create_project_state(vault, placement, state_path):
         return _emit_empty()
-    return _emit(_build_context(state_path, slug, True))
+    return _emit(_build_context(state_path, placement.relative, True))
 
 
-def _create_project_state(
-    vault: Path, projects_dir: Path, project_dir: Path, slug: str, state_path: Path
-) -> bool:
+def _create_project_state(vault: Path, placement: Placement, state_path: Path) -> bool:
     """Write the new state.md. False means "skip and emit nothing"."""
-    # Without a project marker, stay read-only and skip. This avoids
-    # cluttering the vault with throwaway cwd dirs.
+    # Without a project marker, stay read-only and skip.
+    project_dir = placement.repository
     if not _has_project_marker(project_dir):
         return False
-    template = projects_dir / "_template" / "state.md"
+    template = vault / "knowledge" / "projects" / "_template" / "state.md"
     if not template.exists():
         _safe_write_error(f"template missing: {template}")
         return False
     try:
-        content = redact_secrets(_render_new_state(template, slug, project_dir))
+        content = redact_secrets(_render_new_state(template, placement, project_dir))
         encoded = content.encode("utf-8")
         mutate_knowledge(
-            stable_operation_id("project-state", slug, encoded),
+            stable_operation_id("project-state", placement.relative, encoded),
             {state_path: encoded},
         )
     except OSError as e:

@@ -48,14 +48,14 @@ def _run_git(cwd: str, *args: str) -> str:
         return ""
 
 
-def _compute_slug(cwd: str) -> str:
-    """Compute the project slug using the existing 5-step algorithm."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+def _placement(cwd: str):
+    """The registered repository's place, or None for unregistered work."""
+    from work_state import placement_of
+
     try:
-        from session_start_project_state import _compute_slug as _slug
-        return _slug(Path(cwd).resolve(), PROJECTS_DIR)
-    except Exception:
-        return Path(cwd).resolve().name.lower().replace(" ", "-")
+        return placement_of(ROOT, Path(cwd).resolve())
+    except (OSError, ValueError):
+        return None
 
 
 _TRIVIAL_COMMITS = ("formatting", "merge branch", "bump version", "update .gitignore")
@@ -189,18 +189,24 @@ def _extract_docs_structure(cwd: str) -> list[str]:
 
 
 def bootstrap(cwd: str, apply: bool = False) -> str:
-    """Generate a bootstrap context for a new project."""
-    slug = _compute_slug(cwd)
-    project_dir = PROJECTS_DIR / slug
-    content = _bootstrap_content(cwd, slug)
+    """Generate a bootstrap context for a registered repository.
+
+    A directory in no registered repository has no folder under
+    `knowledge/projects/`, so nothing is written for it (ADR 0002).
+    """
+    placement = _placement(cwd)
+    label = placement.relative if placement is not None else Path(cwd).resolve().name
+    content = _bootstrap_content(cwd, label)
     if not apply:
         return content
-    bootstrap_path = project_dir / "bootstrap.md"
-    encoded = _bootstrap_page(slug, content).encode("utf-8")
+    if placement is None:
+        return "Not written: the directory belongs to no registered project."
+    bootstrap_path = placement.directory(ROOT) / "bootstrap.md"
+    encoded = _bootstrap_page(placement.project, label, content).encode("utf-8")
     mutate_knowledge(
-        stable_operation_id("bootstrap", slug, encoded), {bootstrap_path: encoded}
+        stable_operation_id("bootstrap", label, encoded), {bootstrap_path: encoded}
     )
-    return f"Written: {bootstrap_path.relative_to(ROOT)}"
+    return f"Written: {bootstrap_path.relative_to(ROOT).as_posix()}"
 
 
 def _redacted(items: list[str]) -> list[str]:
@@ -252,13 +258,13 @@ def _bootstrap_content(cwd: str, slug: str) -> str:
     return "\n".join(parts)
 
 
-def _bootstrap_page(slug: str, content: str) -> str:
+def _bootstrap_page(project: str, label: str, content: str) -> str:
     return (
         "---\n"
-        f"type: bootstrap-context\ntitle: \"{slug} bootstrap\"\n"
+        f"type: bootstrap-context\ntitle: \"{label} bootstrap\"\n"
         f"description: \"Auto-generated from git history + README\"\n"
         f"timestamp: {datetime.now().isoformat(timespec='seconds')}\n"
-        f"project: {slug}\n"
+        f"project: {project}\n"
         "---\n\n"
         f"{content}\n"
     )
