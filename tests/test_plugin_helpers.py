@@ -405,9 +405,14 @@ def _compile_must_not_run_in_callback():
 
 def _wire_session_start_callback(monkeypatch, integration_adapter):
     spawned = []
+    from work_state import Placement
+
     monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda _event: ("app", Path("project"))
+        integration_adapter,
+        "_project_context",
+        lambda _event: (Placement("app", Path("project"), "project"), Path("project")),
     )
+    monkeypatch.setattr(integration_adapter, "_recover_project_handoff", lambda _placement: ())
     monkeypatch.setattr(integration_adapter, "_record_activity", lambda *_args: True)
     monkeypatch.setattr(
         integration_adapter,
@@ -875,6 +880,10 @@ def test_shared_ingest_persists_heartbeat_with_derived_slug(
     project = tmp_path / "Project With Spaces"
     (vault / "knowledge" / "projects").mkdir(parents=True)
     project.mkdir()
+    # A heartbeat names the registered project the session works in (issue #14).
+    (vault / "knowledge" / "projects" / "project-map.md").write_text(
+        f"## Project With Spaces\n\n- {project.resolve().as_posix()}\n", encoding="utf-8"
+    )
     monkeypatch.setattr(integration_adapter, "ROOT", vault)
     # Child processes read the root from the environment, and conftest pins it
     # to this checkout — which is the owner's live vault.

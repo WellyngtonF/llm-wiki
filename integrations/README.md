@@ -33,7 +33,7 @@ Claude Code is visible to OpenCode in its next session.
 
 | Feature | Every supported agent (Claude Code / OpenCode / Codex) |
 |---|---|
-| **Reads/actions** | 12 task-shaped MCP tools |
+| **Reads/actions** | 13 task-shaped MCP tools |
 | **Auto-capture** | Thin hooks/plugins forward lifecycle events; prompts and edits leave a breadcrumb in the daily log (Claude `UserPromptSubmit`/`PostToolUse`, Codex `UserPromptSubmit`/`PostToolUse` on `apply_patch`\|`Bash`, OpenCode `tool.execute.after`) |
 | **Session classification** | FLUSH MAJOR/MINOR/OK at idle |
 | **Nightly compile** | Native scheduler (Task Scheduler, LaunchAgent, or user systemd); cron is explicit fallback |
@@ -47,7 +47,7 @@ without repairing user configuration.
 
 ## MCP Server
 
-`scripts/mcp_server.py` exposes 12 task-shaped tools over local stdio. The
+`scripts/mcp_server.py` exposes 13 task-shaped tools over local stdio. The
 installer baseline includes the MCP package; `mcp-server` is only a compatibility
 alias. For manual dependency selection, a production install runs
 `uv sync --locked --no-default-groups`.

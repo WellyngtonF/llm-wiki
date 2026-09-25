@@ -24,10 +24,16 @@ it loads.
 Before changing **structure, paths, env contracts, or runtime location**:
 1. Describe the proposed change in plain language (what, why, impact).
 2. Get the user's explicit "yes".
-3. Record the decision in `knowledge/notes/` (decision page) and update
-   `docs/STRUCTURE.md` (the canonical structure reference).
+3. Record the decision as a short, numbered ADR in `docs/adr/`, named
+   `NNNN-slug.md`, and update `docs/STRUCTURE.md` (the canonical structure
+   reference).
 4. Only then write code.
 Never improvise architectural decisions mid-task. When unsure, ask.
+
+Read `CONTEXT.md` first and use its vocabulary. ADRs and `CONTEXT.md` are
+public: keep private knowledge out of them (no real notes, project names or
+paths). This fork records product decisions there, not in `knowledge/notes/`
+(ADR 0001).
 
 ### Release / docs sync
 - Before any release or version bump: **sync `README.md` + `README.ru.md` +
@@ -78,7 +84,7 @@ run/       # state, transactions, queue results, locks, install ownership
   digest-mismatched required policy blocks protected work.
 
 **Agent integration boundary:** MCP is the common interface for reads and
-actions (12 task-shaped tools, uniform response envelope, health/context
+actions (13 task-shaped tools, uniform response envelope, health/context
 resources). Native hooks, plugins, and wrappers are thin lifecycle adapters
 for events MCP cannot observe. Automatic health context is injected only when
 `doctor` reports degraded/error findings.
@@ -317,8 +323,8 @@ writes to it. See `docs/research/2026-09-14-the-vault-log-is-private.md`.
   allowlist is wrong. Fix `.gitignore`, do not commit the page.
 
 ### When asked to "work on the memory system"
-- "Improve the system" → edit code, run tests, commit, push to
-  `Ekgardt/llm-wiki`.
+- "Improve the system" → edit code, run tests, commit, push to the fork
+  `WellyngtonF/llm-wiki`, not upstream `Ekgardt/llm-wiki` (ADR 0001).
 - "Show me my memory / what do I know about X" → read the vault: the same
   directory, in `knowledge/` and the runtime databases.
 
@@ -441,8 +447,8 @@ When asked to compile or ingest new material:
 | `gap` | `knowledge/notes/<slug>.md` | Not-yet-written knowledge. 90-day. |
 | `skill` | `skills/<name>/SKILL.md` | Agent workflow. Never archives. |
 | `rule` | `rules/<name>.md` | File-handling policy. Never archives. |
-| `project-state` | `knowledge/projects/<slug>/state.md` | Per-project handoff. Never archives. |
-| `project-context` | `knowledge/projects/<slug>/` | Per-project context. Never archives. |
+| `project-state` | `knowledge/projects/<project>/<repository>/state.md` | A registered repository's generated work state. Never archives. |
+| `project-context` | `knowledge/projects/project-map.md`, `knowledge/projects/<project>/` | The project map and per-project context. Never archives. |
 | `bootstrap-context` | `knowledge/notes/<slug>.md` | Seed context for new sessions. Never archives. |
 
 Pages live **flat** as `<slug>.md` under `knowledge/notes/` (the compile
@@ -479,7 +485,7 @@ uv run python scripts/lint_memory.py --scope all   # structural lint
 uv run python scripts/search_memory.py "query"     # hybrid search
 uv run python scripts/compile_memory.py            # compile daily logs → notes
 uv run python scripts/lookup_mode.py               # show retrieval tier
-uv run python scripts/mcp_server.py                # MCP server (12 tools, stdio; base install)
+uv run python scripts/mcp_server.py                # MCP server (13 tools, stdio; base install)
 uv run python scripts/doctor.py                    # local health; --repair is explicit
 # v4.0 optional features (require --extra flags):
 uv run python scripts/code_graph.py .              # index code graph (tree-sitter)

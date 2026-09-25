@@ -5168,6 +5168,41 @@ def _mcp_check(root: Path) -> dict:
     return _result("mcp", _ok_or_error(source), _mcp_message(source), details)
 
 
+MAX_REPORTED_MAP_PROBLEMS = 20
+
+
+def _project_map_check(root: Path) -> dict:
+    """Entries of the owner's project map that no lookup can use (ADR 0002)."""
+    from project_map import (
+        MAP_RELATIVE_PATH,
+        ProjectMapError,
+        project_map_problems,
+        read_project_map,
+    )
+
+    details: dict = {"map": MAP_RELATIVE_PATH, "present": (root / MAP_RELATIVE_PATH).is_file()}
+    if not details["present"]:
+        return _result("projects", "ok", "No project is registered yet.", details)
+    try:
+        problems = [problem.as_data() for problem in project_map_problems(root)]
+        details["projects"] = len(read_project_map(root).projects)
+    except ProjectMapError as error:
+        details["problems"] = [{"code": error.code, "message": str(error)}]
+        return _result("projects", "degraded", f"The project map cannot be read: {error}", details)
+    details["problem_count"] = len(problems)
+    details["problems"] = problems[:MAX_REPORTED_MAP_PROBLEMS]
+    if not problems:
+        return _result("projects", "ok", "The project map is valid.", details)
+    codes = ", ".join(sorted({problem["code"] for problem in problems}))
+    return _result(
+        "projects",
+        "degraded",
+        f"The project map has {len(problems)} invalid entr"
+        f"{'y' if len(problems) == 1 else 'ies'} ({codes}); edit {MAP_RELATIVE_PATH}.",
+        details,
+    )
+
+
 def _readable_config(path: Path) -> bool:
     kind, info = _safe_kind(path, path.parent)
     if kind != "regular" or info is None:
@@ -7931,6 +7966,7 @@ def _deferrable_checks(
         ("hooks", lambda _budget: _hook_error_check(state_path, generated_at)),
         ("checkpoints", lambda _budget: _checkpoint_check(state_path, generated_at)),
         ("mcp", lambda _budget: _mcp_check(root_path)),
+        ("projects", lambda _budget: _project_map_check(root_path)),
         (
             "integrations",
             lambda budget: _integration_check(root_path, home_path, deadline=budget),

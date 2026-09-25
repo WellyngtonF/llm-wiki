@@ -486,7 +486,7 @@ def test_the_three_verbs_are_modes_of_get_architecture_not_a_thirteenth_tool():
     modes = set(schema["properties"]["mode"]["enum"])
 
     assert {"index", "repositories", "changes"} <= modes
-    assert len(mcp_server._build_tool_definitions()) in (0, 12)
+    assert len(mcp_server._build_tool_definitions()) in (0, 13)
 
 
 def _mode_contract_errors() -> list:

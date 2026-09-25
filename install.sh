@@ -810,7 +810,7 @@ echo "  uv run --locked --no-sync python scripts/build_advisory.py              
 echo "  uv run --locked --no-sync python scripts/build_guardrails.py             # learned rules"
 echo "  uv run --locked --no-sync python benchmark/run_benchmark.py              # run benchmark"
 echo ""
-echo "MCP baseline: 12 local task-shaped tools (installed)"
+echo "MCP baseline: 13 local task-shaped tools (installed)"
 echo "Optional enhancements:"
 echo "  uv sync --locked --no-default-groups --inexact --extra hybrid"
 echo "  uv sync --locked --no-default-groups --inexact --extra code-graph"

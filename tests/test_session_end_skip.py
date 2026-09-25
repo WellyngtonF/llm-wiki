@@ -79,7 +79,11 @@ def test_skip_home_cwd(fake_vault):
 
 
 def test_write_non_vault_cwd(fake_vault):
-    """Normal non-vault cwd → tagged entry appended to today's daily log."""
+    """Normal non-vault cwd → entry appended to today's daily log, naming no project.
+
+    Unregistered work belongs to no project (issue #14), so the entry carries no
+    `Project:` line; the capture itself goes on.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         rc = _invoke(tmp, str(fake_vault), {"session_id": "reg-nonvault", "reason": "other"})
     assert rc == 0
@@ -87,4 +91,21 @@ def test_write_non_vault_cwd(fake_vault):
     assert daily.exists(), "daily log was not created"
     content = daily.read_text(encoding="utf-8")
     assert "reg-nonvault" in content, "non-vault session-end did not append to daily log"
-    assert "Project slug:" in content, "appended entry missing `Project slug:` line"
+    assert "- Project:" not in content and "Project slug" not in content
+
+
+def test_write_registered_cwd_names_its_project_and_repository(fake_vault):
+    """A registered repository's entry names the project and the main checkout."""
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp).resolve() / "backend"
+        (checkout / ".git").mkdir(parents=True)
+        (checkout / "src").mkdir()
+        (fake_vault / "knowledge" / "projects").mkdir(parents=True, exist_ok=True)
+        (fake_vault / "knowledge" / "projects" / "project-map.md").write_text(
+            f"## product-a\n\n- {checkout.as_posix()}\n", encoding="utf-8"
+        )
+        rc = _invoke(str(checkout / "src"), str(fake_vault), {"session_id": "reg-mapped", "reason": "other"})
+    assert rc == 0
+    content = _today_daily(fake_vault).read_text(encoding="utf-8")
+    assert "- Project: `product-a`" in content
+    assert f"- Repository: `{checkout}`" in content

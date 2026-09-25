@@ -119,7 +119,7 @@ def journal_records(store: ProjectStore, slug: str = "demo") -> list[dict[str, o
 def test_generated_projection_preserves_project_slug_ownership(
     project_store: ProjectStore, vault: Path, tmp_path: Path
 ):
-    from session_start_project_state import _compute_slug
+    from session_start_project_state import repository_folder
 
     project_dir = tmp_path / "demo"
     project_dir.mkdir()
@@ -130,7 +130,8 @@ def test_generated_projection_preserves_project_slug_ownership(
 
     state = vault / "knowledge/projects/demo/state.md"
     assert f"- Project root: `{project_dir}`" in state.read_text(encoding="utf-8")
-    assert _compute_slug(project_dir, vault / "knowledge/projects") == "demo"
+    projects = vault / "knowledge/projects"
+    assert repository_folder(project_dir, projects, projects) == "demo"
 
 
 def _assert_canonical_row_matches_domain_row(database) -> None:
@@ -366,12 +367,12 @@ def test_cyrillic_computed_slug_supports_new_and_existing_project_state(
     tmp_path: Path,
     existing_state: bool,
 ):
-    from session_start_project_state import _compute_slug
+    from session_start_project_state import repository_folder
 
     project_dir = tmp_path / "Тесты"
     project_dir.mkdir()
     projects = vault / "knowledge/projects"
-    slug = _compute_slug(project_dir, projects)
+    slug = repository_folder(project_dir, projects, projects)
     assert slug == "тесты"
     if existing_state:
         target = projects / slug
@@ -379,7 +380,7 @@ def test_cyrillic_computed_slug_supports_new_and_existing_project_state(
         (target / "state.md").write_text(
             f"# {slug}\n- Project root: `{project_dir}`\n", encoding="utf-8"
         )
-        assert _compute_slug(project_dir, projects) == slug
+        assert repository_folder(project_dir, projects, projects) == slug
 
     event = checkpoint_event(f"evt-{existing_state}", f"unicode:{existing_state}")
     event["provenance"]["worktree"] = str(project_dir)
@@ -2115,14 +2116,14 @@ def test_a_generated_state_page_quotes_a_slug_that_would_parse_as_a_list() -> No
 
 def test_the_vault_root_is_never_a_project(vault: Path) -> None:
     """Issue #20: a hook run from the vault minted a project named after it."""
-    from session_start_project_state import _compute_slug
+    from session_start_project_state import working_repository
 
     with pytest.raises(ValueError, match="vault root is not a project"):
-        _compute_slug(vault, vault / "knowledge/projects")
+        working_repository(vault, vault / "knowledge/projects")
     # Since 2026-09-23 a directory inside the vault is refused too: a benchmark
     # run under `cache/` and a transaction directory under `run/` had become projects.
     with pytest.raises(ValueError, match="inside the vault is not a project"):
-        _compute_slug(vault / "sub-project", vault / "knowledge/projects")
+        working_repository(vault / "sub-project", vault / "knowledge/projects")
 
 
 def _checkpoints(store: ProjectStore, count: int) -> None:

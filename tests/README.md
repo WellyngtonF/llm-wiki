@@ -32,7 +32,7 @@ The suite is the **full regression suite**. Highlights:
 | `test_reranker.py` | Cross-encoder reranker: graceful degradation, rerank logic, sigmoid stability, search_memory integration. |
 | `test_access_tracking.py` | Access tracking: record, stats, Ebbinghaus decay score, frontmatter flush, batch threshold. |
 | `test_reflection.py` | A-MEM reflection: candidate finding (pages with >=2 updates), threshold, skip conditions, dry-run. |
-| `test_mcp_server.py` | MCP server: 12 task-shaped tools including doctor, resources, uniform response envelopes, async handling, and graceful degradation. |
+| `test_mcp_server.py` | MCP server: 13 task-shaped tools including doctor, resources, uniform response envelopes, async handling, and graceful degradation. |
 | `test_event_envelope.py` | Versioned lifecycle event envelope validation and redaction. |
 | `test_integration_injection.py` | Thin host adapters normalize events through `integration_adapter.py`. |
 | `test_doctor.py` | Local health checks, degraded-only summaries, time budgets, and safe idempotent repairs. |

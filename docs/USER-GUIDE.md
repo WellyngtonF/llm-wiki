@@ -96,7 +96,9 @@ the nightly report then says `skipped (detached_head)`. Existing
 checkouts retain all remote settings unless `--protect-push` or `-ProtectPush` is explicit.
 The installer detects agents. It configures OpenCode, Codex, and Claude only when their
 configuration verifies.
-Obsidian remains a viewer-only integration.
+Obsidian is the reading surface, never a requirement: when `knowledge/.obsidian/`
+already exists, the install places the claims-ledger CSS snippet there (see
+[Reading the memory in Obsidian](#reading-the-memory-in-obsidian)).
 
 ### Installed-vault reliability check
 
@@ -154,7 +156,32 @@ remove v2 state by hand.
 | **Claude Code** | Configure MCP for reads/actions; the installer's ownership transaction writes the thin lifecycle hooks into `~/.claude/settings.json` and takes them back on uninstall. |
 | **OpenCode** | Configure MCP, then copy `scripts/llm-wiki-memory-opencode.js` for lifecycle events. |
 | **Codex CLI** | Configure MCP; on Windows add `. "$env:LLM_WIKI_ROOT\scripts\codex-memory-wrapper.ps1"` to `$PROFILE` for lifecycle capture. |
-| **Obsidian** | Optional Markdown viewer only: open the vault directly. No Obsidian UI is required. |
+| **Obsidian** | Optional reading surface: open `knowledge/` as the vault. Agents never need it. |
+
+### Reading the memory in Obsidian
+
+Open `knowledge/` as an Obsidian vault. Links are bare `[[slug]]` names, and
+Obsidian derives backlinks itself. Every note ends with a claims ledger: a
+`## Claims` heading followed by a one-line `json` block that the product reads.
+The snippet `llm-wiki-claims-ledger.css` collapses it so the note reads as prose.
+
+When `knowledge/.obsidian/` exists, `install.sh` and `install.ps1` copy the
+snippet to `knowledge/.obsidian/snippets/llm-wiki-claims-ledger.css`. They never
+create `.obsidian/`: open the vault in Obsidian once, then rerun the installer.
+A rerun leaves an up-to-date snippet as it is, and an uninstall removes it. The
+source is `integrations/obsidian/llm-wiki-claims-ledger.css`; copying it by hand
+works too.
+
+Enable it once: **Settings → Appearance → CSS snippets**, press the reload
+button, and switch on `llm-wiki-claims-ledger`.
+
+- **Reading view:** the heading is faint and the ledger shrinks to one dim row.
+  Hover it to read it in full.
+- **Live preview:** the ledger line is clipped to one dim row until the cursor
+  enters it. The editor does not expose heading text to CSS, so the rule matches
+  the ledger's shape: a level-2 heading followed directly by a one-line code
+  block. Another note section with that exact shape is dimmed the same way.
+- **Source mode** is left as it is.
 
 The same managed hooks also put the code graph where agents search (issue #24):
 a `Grep`/`Glob` in Claude Code, or an `rg`/`grep` in Codex, whose pattern names a
@@ -170,13 +197,14 @@ Malformed configuration, ownership conflicts, or drift fail closed instead of be
 overwritten. `doctor` reports active, absent, or conflicting structural ownership and
 never repairs these files implicitly.
 
-The MCP server exposes 12 task-shaped tools, including `doctor`. All tools use
+The MCP server exposes 13 task-shaped tools, including `doctor`. All tools use
 one response envelope, and health/context are also available as MCP resources.
 
-### Exact 12-tool contract
+### Exact 13-tool contract
 
-The tool count and names are unchanged. These are the implemented behaviors in the
-integrated Tasks 1-29 branch, not the broader Task 17 target:
+`manage_project` joined the twelve earlier tools with the project map (Stage 2 of
+the readable-memory spec). These are the implemented behaviors in the integrated
+Tasks 1-29 branch, not the broader Task 17 target:
 
 | Tool | Current behavior |
 |---|---|
@@ -192,6 +220,7 @@ integrated Tasks 1-29 branch, not the broader Task 17 target:
 | `find_dead_code` | Queries the active Evidence Graph first and reports source generation, graph completeness, unresolved count, and fallback. `live=true` explicitly bypasses the store. |
 | `get_architecture` | Keeps structural `summary`, `symbol`, `callers`, `callees`, `dependencies`, `path`, `community`, and `impact`; adds `search` (ranked qualified names with degree), `snippet` by `owner.name` with exact stored line ranges, `coverage` with the parse ranges the extractor could not read, `depth` on `callers`/`callees`, and `affected_symbols` on `impact` (#24, B); precise Python `definition`, `references`, `implementations`, `type`, `diagnostics`, and positioned call modes use the owned Pyright session. |
 | `doctor` | Exposes nine closed actions: `status`, queue inspect/cancel/redrive/dead-list, transaction recover/undo, archive status, and claim status. Mutation actions require `repair=true`. |
+| `manage_project` | Edits the private project map through the Markdown transaction API with six closed actions: `create` (`name`, optional `directory`), `attach` (`name`, `directory`), `detach` (`directory`), `rename` (`name`, `new_name`), `remove` (`name`), and `list`. A refused request answers with a stable `code` such as `unknown_project`, `project_exists`, `reserved_name` or `not_a_repository`. See [Registering a project](#registering-a-project). |
 
 All responses retain JSON text compatibility and the common envelope. Structured MCP
 output is used when the installed SDK supports it. The envelope's top-level
@@ -257,8 +286,9 @@ codes, and qualification evidence.
 
 ### Register scheduled maintenance
 
-The installers publish profile/environment, scheduler, and detected agent
-hook fragments through one resumable `run/install/` ownership transaction. Version 2
+The installers publish profile/environment, scheduler, detected agent
+hook fragments, and the Obsidian snippet (only when `knowledge/.obsidian/` exists)
+through one resumable `run/install/` ownership transaction. Version 2
 keeps the pre-first-install projection for uninstall and one latest committed update
 projection for explicit rollback. Recovery uses persisted historical definitions, not
 the current checkout templates. Rerun the native installer to reconcile owned state;
@@ -325,6 +355,9 @@ rerun_installer`. Resync an extra with `uv sync --locked --no-default-groups --i
 
 SUNDAY 04:00 (scheduler)
   Everything nightly does + OKF conformance sweep + archive stale + prune failed queue tasks
+  + consolidate each note with two or more updates into one page: the old prose goes
+  into a collapsed History block, the note ends with its one Claims ledger, and
+  decisions and retired notes are never rewritten
 ```
 
 Windows tasks run only while the current user is logged on. macOS LaunchAgents use
@@ -403,6 +436,67 @@ bounded incremental refresh starts in the background; the answer you get is
 from the generation the vault has, and the next answer sees the new one. The
 nightly pass refreshes every registered repository. See
 `docs/CODE-NAVIGATION.md`.
+
+### Registering a project
+
+A project is a product you are building, and it may span several repositories (a
+backend, a frontend, shared services). Only projects you register exist. Register
+one by asking the agent you are already talking to, from Claude Code, Codex or
+OpenCode alike:
+
+- "I'm starting project Product A here, add it to the memory." The agent calls
+  `manage_project` with `action=create`, `name="Product A"` and its working
+  directory, so the project is created with the current repository in it.
+- "This repository belongs to Product A." → `action=attach`. A repository that
+  already belongs to another project is moved, and the answer says from where.
+- "Detach this repository", "rename Product A to Product B", "remove Product A" →
+  `detach`, `rename`, `remove`. "Which projects do I have?" → `list`.
+
+A subfolder or a worktree registers its repository's main checkout. A directory in
+no git repository cannot join a project. Names are stored as folder-safe slugs
+(`Product A` becomes `product-a`); `general` is reserved for notes without a
+project.
+
+The registrations live in one private file, `knowledge/projects/project-map.md`,
+that you can also edit in Obsidian:
+
+```markdown
+## product-a
+
+- C:/work/backend
+- C:/work/frontend
+```
+
+Prose, blank lines, either slash and trailing slashes are fine, and edits made
+through the tool keep what you wrote around the entries. `doctor` reports the
+entries it cannot use: a duplicate project, a repository listed in two projects,
+a path that does not exist or is not a repository's main checkout, and the
+reserved name.
+
+Each registered repository keeps its work state, what agents were last doing
+there, in `knowledge/projects/<project>/<repository>/`: an append-only `journal.md`
+and the `state.md` generated from it, which session start hands to the next agent.
+Work in a directory that belongs to no registered repository (web research, file
+chores) creates nothing under `knowledge/projects/`; it is still captured into the
+daily log and compiled as before, and its daily entries name no project.
+
+A note the compile creates carries `project: "<project>"` in its frontmatter when
+its evidence comes from a registered repository, so search can filter by project.
+The compile reads it from the cited daily entries (a capture's `Repository:` line,
+a breadcrumb's `<project>/<repository>` tag) through the project map as it is at
+compile time, never from the model: a repository moved to another project files its
+new notes there, and one no longer in the map gives none. When the evidence spans
+several projects, the note takes the one most cited entries name; entries from
+unregistered work count as a side of their own, and a tie gives no project. An
+update never changes a note's frontmatter, so an existing `project:` stays as it
+is and a note without one does not gain it.
+
+The folders follow the map. Attaching a repository to another project moves its
+folder, renaming a project moves the project's folder, and detaching a repository
+or removing a project deletes its work state. Your notes are never touched. Each
+change is one transaction, and the tool's answer names it: you can undo it for two
+days with the `doctor` tool (`action=transaction-undo`, `repair=true`, the
+transaction id). The emptied folders are removed once that window has passed.
 
 ### Compiling knowledge manually
 
@@ -520,12 +614,12 @@ uv run python scripts/doctor.py                            # local health; --rep
 uv run --locked --no-sync python scripts/sync_memory.py --check --json  # read-only check
 ```
 
-Per-project brief — the decisions, patterns and open threads of one project,
-written to `knowledge/projects/<slug>/context.md`:
+Per-project brief — the decisions, patterns and open threads of one registered
+project, written to `knowledge/projects/<project>/context.md`:
 
 ```bash
-uv run python scripts/build_context.py --slug my-project           # print it
-uv run python scripts/build_context.py --slug my-project --write   # write the page
+uv run python scripts/build_context.py my-project           # print it
+uv run python scripts/build_context.py my-project --write   # write the page
 ```
 
 ### Migrating existing links for Obsidian (one-off)
@@ -912,7 +1006,8 @@ at most 0.04 (`docs/research/2026-09-10-cross-lingual-memory-world-practice.md`)
 | `benchmark/` | CODE | Benchmark suite + report |
 | `knowledge/daily/` | KNOWLEDGE | Append-only session logs (private) |
 | `knowledge/notes/` | KNOWLEDGE | Durable OKF pages |
-| `knowledge/projects/<slug>/` | KNOWLEDGE | Append-only journal.md + projected state.md |
+| `knowledge/projects/project-map.md` | KNOWLEDGE | Private project map: registered projects and their repositories |
+| `knowledge/projects/<project>/<repository>/` | KNOWLEDGE | A registered repository's append-only journal.md + projected state.md |
 | `knowledge/raw/` | KNOWLEDGE | Immutable sources |
 | `knowledge/inbox/` | KNOWLEDGE | Unprocessed staging |
 | `knowledge/feedback/` | KNOWLEDGE | Correction candidates |

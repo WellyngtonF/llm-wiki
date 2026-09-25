@@ -187,13 +187,15 @@ MOJIBAKE_MARKERS = (
 # absolute project-root path) are machine-specific metadata that the
 # LLM rarely needs and that consume tokens.
 #
-# Kept as useful signal: `Project slug: ...` (identifies which project
-# a session-end block belongs to) and the session-end header line
-# minus its session-id suffix (see SESSION_ID_STRIP_RE).
+# Kept as useful signal: `Project: ...` (identifies which registered project
+# a session-end block belongs to; `Project slug:` in entries written before the
+# project layout) and the session-end header line minus its session-id suffix
+# (see SESSION_ID_STRIP_RE). `Repository:` is the main checkout's absolute path.
 NOISE_PATTERNS = (
     re.compile(r"^\s*-\s*Trigger:\s*.*$"),
     re.compile(r"^\s*-\s*Transcript:\s*.*$"),
     re.compile(r"^\s*-\s*Project root:\s*.*$"),
+    re.compile(r"^\s*-\s*Repository:\s*.*$"),
     # The labels the capture worker writes under its header: the host's name, a
     # 64-character digest and one word of tier took three of the six excerpt lines. See
     # `docs/research/2026-09-17-the-daily-excerpt-shows-the-entry-not-its-label.md`.
@@ -475,19 +477,18 @@ def _count_md(tree: Path) -> int:
     return sum(1 for _ in tree.rglob("*.md") if _.is_file())
 
 
-def _is_active_project(path: Path) -> bool:
-    """A project counts as active when it is a real folder carrying a handoff."""
-    if not path.is_dir() or path.name == "_template":
-        return False
-    return (path / "state.md").exists()
-
-
 def _count_active_projects() -> int:
-    """Project folders with a state.md file (active = has handoff)."""
-    projects_root = ROOT / "knowledge" / "projects"
-    if not projects_root.exists():
+    """The projects the owner registered in the project map (ADR 0002).
+
+    Folders are not projects: a folder left from before the project layout, or
+    one a hand edit made, is not counted.
+    """
+    from project_map import ProjectMapError, read_project_map
+
+    try:
+        return len(read_project_map(ROOT).projects)
+    except (OSError, ProjectMapError):
         return 0
-    return sum(1 for d in projects_root.iterdir() if _is_active_project(d))
 
 
 def _iso_text(raw: str) -> str:
