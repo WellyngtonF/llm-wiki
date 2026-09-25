@@ -838,13 +838,13 @@ def apply_migration(vault: Path, state_root: Path, plan: Plan) -> dict:
 
 def _page_changes(vault: Path, plan: Plan, changes: dict[Path, bytes | None]) -> list:
     """The project pages as they read once the migration commits, in the same transaction."""
-    from project_pages import NOTES_RELATIVE, Repository, _disk_notes, page_writes
+    from project_pages import NOTES_RELATIVE, Repository, disk_notes, page_writes
     from work_state import placements
 
     written = {path.relative_to(vault).as_posix(): content for path, content in changes.items()}
     notes = {
         relative: content
-        for relative, content in _disk_notes(vault).items()
+        for relative, content in disk_notes(vault).items()
         if written.get(relative, content) is not None
     }
     notes.update(

@@ -331,7 +331,7 @@ def _folder(vault: Path, relative: str) -> Path:
 
 @pytest.fixture
 def worked(vault, tmp_path):
-    """A registered repository with work state, and a note nobody may touch."""
+    """A registered repository with work state, and a note of its project."""
     checkout = _repository(tmp_path)
     created = _call({"action": "create", "name": "product-a", "directory": str(checkout)})
     assert created["data"]["status"] == "ok"
@@ -393,7 +393,8 @@ def test_renaming_the_project_moves_its_folder_and_the_journal_goes_on(vault, wo
     assert _journals(vault) == ["product-c/backend/journal.md"]
     events = _events(_folder(vault, "product-c/backend/journal.md"))
     assert [event["sequence"] for event in events] == [1, 2]
-    assert note.read_bytes() == before
+    assert note.read_bytes() == before.replace(b"project: product-a", b'project: "product-c"')
+    assert response["data"]["notes"]["renamed"] == ["knowledge/notes/a-lesson.md"]
 
 
 def test_detaching_deletes_the_work_state_and_the_undo_brings_it_back(vault, worked) -> None:

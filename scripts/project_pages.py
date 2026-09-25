@@ -151,7 +151,8 @@ def _overlaid(read: Reader, overlay: Mapping[str, bytes | None]) -> Reader:
     return overlaid
 
 
-def _disk_notes(vault: Path) -> dict[str, bytes]:
+def disk_notes(vault: Path) -> dict[str, bytes]:
+    """Every note under `knowledge/notes/`, by vault-relative path."""
     notes = Path(vault) / NOTES_RELATIVE
     if not notes.is_dir():
         return {}
@@ -162,6 +163,20 @@ def _disk_notes(vault: Path) -> dict[str, bytes]:
         content = read(relative)
         if content is not None:
             found[relative] = content
+    return found
+
+
+def notes_of_project(notes: Mapping[str, bytes], project: str) -> list[str]:
+    """The notes whose `project:` names `project`, retired ones too, in path order."""
+    found = []
+    for relative, content in sorted(notes.items()):
+        if not relative.startswith(f"{NOTES_RELATIVE}/") or not relative.endswith(".md"):
+            continue
+        if PurePosixPath(relative).name in _SKIP_NAMES:
+            continue
+        named = _text(read_frontmatter(content).mapping.get("project"))
+        if named and project_name(named) == project:
+            found.append(relative)
     return found
 
 
@@ -502,7 +517,7 @@ def page_writes(
     if repositories is None:
         repositories = _repositories(vault, project_map)
     desired = render_pages(
-        _disk_notes(vault) if notes is None else notes,
+        disk_notes(vault) if notes is None else notes,
         project_map,
         repositories,
         read,

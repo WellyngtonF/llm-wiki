@@ -513,8 +513,11 @@ project the same way.
 The pages are generated: do not edit them, your edits are replaced. They are
 rewritten after every compile, after every project registration change, and every
 night, which also catches notes you edited by hand and work state that changed
-since. A renamed project's existing notes keep their old `project:` and show on the
-General page until you change it. The pages are private, like your notes.
+since. Renaming a project renames the `project:` of every note that names it, in
+the same undoable change, so they stay on its page; a note whose frontmatter cannot
+be rewritten safely is named in the answer and shows on the General page. Removing a
+project leaves its notes as they are: they keep their `project:` and show on the
+General page, and the answer says so. The pages are private, like your notes.
 
 ### Moving to registered projects (one-off)
 

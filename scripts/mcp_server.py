@@ -4014,8 +4014,10 @@ def _build_tool_definitions() -> list:
                 "asks to rename, detach or remove one. Pass your current working "
                 "directory as `directory`. Attaching a repository that belongs to "
                 "another project moves it and its work state; renaming moves the "
-                "project's folder; detaching or removing deletes the work state, "
-                "undoably for two days. `list` shows the map and its problems."
+                "project's folder and renames its notes' `project:`; detaching or "
+                "removing deletes the work state, undoably for two days, and a "
+                "removed project's notes are listed on the General page. `list` "
+                "shows the map and its problems."
             ),
             inputSchema=TOOL_INPUT_SCHEMAS["manage_project"],
         ),

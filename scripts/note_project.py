@@ -1,4 +1,4 @@
-"""The project a new note belongs to, read from the daily entries its evidence cites.
+"""The project a note belongs to: derived for a new note, renamed with its project.
 
 Stage 2 of `docs/specs/2026-09-24-readable-memory.md`, ADR 0002. The model never
 chooses a note's project; the compile derives it from where the cited work
@@ -15,6 +15,9 @@ happened, through the project map as it is at compile time:
 Each distinct cited entry is one vote, and "no project" is a candidate like any
 other. The candidate with most votes wins; a tie for the most gives no project, so
 a note is never filed under a project its evidence does not clearly point to.
+
+Renaming a project renames the `project:` of every note that names it
+(`with_renamed_project`), so its notes stay on its page.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from itertools import dropwhile, takewhile
 from pathlib import Path
 
+from corpus_snapshot import read_frontmatter
 from evidence_resolver import daily_entries
 from project_map import ProjectMap, ProjectMapError, read_project_map
 from work_state import placements
@@ -36,6 +40,9 @@ _BREADCRUMB = re.compile(
 # A breadcrumb's fields after its kind, and which of them is the tag:
 # `prompt | <session> | <tag>` and `tool | <agent> | <session> | <tag> | <tool>`.
 _TAG_FIELD = {"prompt": (2, 1), "tool": (4, 2)}
+_PROJECT_KEY = re.compile(r"^project[ \t]*:")
+# The lines that continue a top-level value: indented text or block-list items.
+_CONTINUATION = re.compile(r"^(?:[ \t]+\S|-(?:[ \t]|\r?$))")
 
 Citation = tuple[str, bytes, int]
 """One cited evidence span: its source's identity, the source's bytes, its offset."""
@@ -91,3 +98,30 @@ class NoteProjects:
         if len(parts) != count:
             return None
         return self.tags.get(parts[index].strip())
+
+
+def with_renamed_project(content: bytes, project: str) -> bytes | None:
+    """The note with its `project:` value replaced by `project`; the rest byte for byte.
+
+    None when the note has no `project:` or its frontmatter does not read back with
+    only that value changed: rewriting what cannot be read back could lose what the
+    owner wrote.
+    """
+    frontmatter = read_frontmatter(content)
+    if frontmatter.body_start == 0 or frontmatter.problem is not None:
+        return None
+    lines = content[: frontmatter.body_start].decode("utf-8").splitlines(keepends=True)
+    start = next((index for index, text in enumerate(lines) if _PROJECT_KEY.match(text)), None)
+    if start is None:
+        return None
+    end = start + 1
+    while end < len(lines) - 1 and _CONTINUATION.match(lines[end]):
+        end += 1
+    newline = "\r\n" if lines[start].endswith("\r\n") else "\n"
+    escaped = project.replace("\\", "\\\\").replace('"', '\\"')
+    lines[start:end] = [f'project: "{escaped}"{newline}']
+    rewritten = "".join(lines).encode("utf-8") + content[frontmatter.body_start :]
+    after = read_frontmatter(rewritten)
+    if after.problem is not None or after.mapping != {**frontmatter.mapping, "project": project}:
+        return None
+    return rewritten

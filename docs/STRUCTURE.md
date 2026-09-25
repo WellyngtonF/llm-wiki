@@ -655,9 +655,12 @@ or nonzero active state remains fail-closed.
   transaction as the map: attaching a repository to another project moves its
   folder, renaming a project moves the project's folder, and detaching a
   repository or removing a project deletes its work-state folder. The same
-  transaction regenerates the project pages. Notes are never touched, so a
-  renamed project's notes keep the old `project:` and are listed on the General
-  page until their frontmatter names the new one. The transaction can be undone for two days (doctor
+  transaction regenerates the project pages. A rename also rewrites `project:`
+  on every note that names the old name (a frontmatter-only edit, the rest byte
+  for byte, preconditioned on each note's hash), so the renamed project's page
+  lists them; a note whose frontmatter does not read back with only that value
+  changed is left and reported. A removal leaves notes untouched, so they are
+  listed on the General page. The transaction can be undone for two days (doctor
   `transaction-undo`); the directories it emptied stay until then, because the
   undo puts the files back into them, and the next edit after the window removes
   them. Doctor's `projects` check reports duplicate projects, a

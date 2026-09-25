@@ -21,8 +21,11 @@ another project moves its folder, renaming a project moves the project's folder,
 and detaching a repository or removing a project deletes the work-state folder.
 The same transaction regenerates the project pages (`project_pages`): a new
 project gets its page, a renamed one's page moves, a removed one's goes and its
-notes are listed on the General page. The transaction is undoable for the undo
-window like any other. Notes are never touched.
+notes are listed on the General page. A rename also rewrites the `project:` of
+every note that names the old name, in the same transaction and only if each note
+is still the one read, so the notes stay on the renamed project's page; a removal
+leaves notes as they are. The transaction is undoable for the undo window like any
+other.
 """
 from __future__ import annotations
 
@@ -751,6 +754,82 @@ def _folder_plan(
     return plan
 
 
+@dataclass
+class _NotePlan:
+    """The notes naming a renamed or removed project, and the note tree once it commits."""
+
+    tree: dict[str, bytes] | None = None
+    renamed: dict[str, tuple[bytes, bytes]] = field(default_factory=dict)
+    unchanged: list[str] = field(default_factory=list)
+
+
+def _note_plan(vault: Path, outcome: _Outcome, action: str) -> _NotePlan:
+    """A rename rewrites each note's `project:`; a removal leaves every note as it is."""
+    from note_project import with_renamed_project
+    from project_pages import disk_notes, notes_of_project
+
+    if action not in ("rename", "remove"):
+        return _NotePlan()
+    tree = disk_notes(vault)
+    named = outcome.extra["renamed_from"] if action == "rename" else outcome.project
+    plan = _NotePlan(tree=tree)
+    for relative in notes_of_project(tree, named):
+        before = tree[relative]
+        after = with_renamed_project(before, outcome.project) if action == "rename" else None
+        if after is None:
+            plan.unchanged.append(relative)
+            continue
+        plan.renamed[relative] = (before, after)
+        tree[relative] = after
+    return plan
+
+
+def _note_changes(plan: _NotePlan) -> tuple[list, dict[str, object]]:
+    from bounded_io import MAX_KNOWLEDGE_PAGE_BYTES
+    from markdown_transaction import MarkdownChange, sha256_bytes
+
+    changes = [
+        MarkdownChange.replace(relative, after, max_before_bytes=MAX_KNOWLEDGE_PAGE_BYTES)
+        for relative, (_before, after) in plan.renamed.items()
+    ]
+    preconditions = {
+        relative: sha256_bytes(before) for relative, (before, _after) in plan.renamed.items()
+    }
+    return changes, preconditions
+
+
+def _notes_report(plan: _NotePlan, action: str) -> dict:
+    if not (plan.renamed or plan.unchanged):
+        return {}
+    report: dict[str, list[str]] = {"unchanged": list(plan.unchanged)}
+    if action == "rename":
+        report = {"renamed": list(plan.renamed), **report}
+    return {"notes": report}
+
+
+def _notes_message(plan: _NotePlan, action: str, project: str | None) -> str:
+    parts = []
+    if plan.renamed:
+        count = len(plan.renamed)
+        parts.append(
+            f"{count} {'note now names' if count == 1 else 'notes now name'} '{project}'"
+        )
+    if plan.unchanged:
+        count = len(plan.unchanged)
+        subject = "note" if count == 1 else "notes"
+        if action == "rename":
+            parts.append(
+                f"{count} {subject} naming the old name could not be rewritten and "
+                "are listed on the General page"
+            )
+        else:
+            parts.append(
+                f"its {count} {subject} keep `project: {project}` and are listed on "
+                "the General page"
+            )
+    return "; ".join(parts)
+
+
 def _placements_after(
     vault: Path, before: ProjectMap, after: ProjectMap, plan: _FolderPlan
 ) -> list:
@@ -776,8 +855,10 @@ def _placements_after(
     return found
 
 
-def _page_writes(vault: Path, before: ProjectMap, after: ProjectMap, plan: _FolderPlan) -> list:
-    """The project pages as they read once the map edit and its folder changes commit."""
+def _page_writes(
+    vault: Path, before: ProjectMap, after: ProjectMap, plan: _FolderPlan, notes: _NotePlan
+) -> list:
+    """The project pages as they read once the map edit and its folder and note changes commit."""
     from project_pages import page_writes
 
     overlay: dict[str, bytes | None] = {source: None for source, _target in plan.moves}
@@ -785,6 +866,7 @@ def _page_writes(vault: Path, before: ProjectMap, after: ProjectMap, plan: _Fold
     overlay.update(plan.written)
     return page_writes(
         vault,
+        notes=notes.tree,
         project_map=after,
         repositories=_placements_after(vault, before, after, plan),
         overlay=overlay,
@@ -899,12 +981,13 @@ def _write_map(
     after: bytes,
     action: str,
     plan: _FolderPlan,
+    notes: _NotePlan,
     pages: list,
     *,
     deadline: float,
     cancelled: Callable[[], bool] | None,
 ) -> str:
-    """Write the map, its folder changes and its project pages as one transaction; its id."""
+    """Write the map, its folder and note changes and its project pages as one transaction."""
     from markdown_transaction import (
         ABSENT,
         MarkdownChange,
@@ -921,6 +1004,7 @@ def _write_map(
         change = MarkdownChange.replace(MAP_RELATIVE_PATH, after, max_before_bytes=MAX_MAP_BYTES)
         expected = sha256_bytes(before)
     folder_changes, folder_preconditions = _folder_changes(plan)
+    note_changes, note_preconditions = _note_changes(notes)
     created = [page.path for page in pages if page.content is not None]
     destinations = [
         *(target for _source, target in plan.moved_folders),
@@ -930,11 +1014,12 @@ def _write_map(
         for target in [*(target for _source, target in plan.moves), *created]:
             coordinator.ensure_target_parent(target)
         record = coordinator.prepare(
-            [change, *folder_changes, *(page.change() for page in pages)],
+            [change, *folder_changes, *note_changes, *(page.change() for page in pages)],
             operation_id=f"project-map:{action}:{uuid.uuid4().hex}",
             preconditions={
                 MAP_RELATIVE_PATH: expected,
                 **folder_preconditions,
+                **note_preconditions,
                 **{page.path: page.before for page in pages},
             },
             deadline=deadline,
@@ -944,7 +1029,8 @@ def _write_map(
         _prune_empty(vault, destinations)
         raise ProjectMapError(
             "map_changed",
-            "the project map or a work-state folder changed while it was being edited; try again",
+            "the project map, a work-state folder or a note changed while it was being "
+            "edited; try again",
         ) from error
     except Exception:
         _prune_empty(vault, destinations)
@@ -986,12 +1072,14 @@ def manage_project(
     parsed_before = draft.parsed()
     outcome = edit(vault, draft, request)
     plan = _FolderPlan()
+    notes = _NotePlan()
     pages: list = []
     transaction_id = None
     if outcome.changed:
         after = draft.text().encode("utf-8")
         plan = _folder_plan(vault, parsed_before, draft.parsed(), outcome, action)
-        pages = _page_writes(vault, parsed_before, draft.parsed(), plan)
+        notes = _note_plan(vault, outcome, action)
+        pages = _page_writes(vault, parsed_before, draft.parsed(), plan, notes)
         transaction_id = _write_map(
             vault,
             state_root,
@@ -999,13 +1087,20 @@ def manage_project(
             after,
             action,
             plan,
+            notes,
             pages,
             deadline=deadline,
             cancelled=cancelled,
         )
-    message = outcome.message
-    if plan:
-        message = f"{message}; {_work_state_message(plan)}"
+    message = "; ".join(
+        part
+        for part in (
+            outcome.message,
+            _work_state_message(plan),
+            _notes_message(notes, action, outcome.project),
+        )
+        if part
+    )
     return {
         "status": "ok",
         "action": action,
@@ -1014,6 +1109,7 @@ def manage_project(
         "message": message,
         **outcome.extra,
         **_work_state_report(plan, transaction_id),
+        **_notes_report(notes, action),
         **_pages_report(pages),
         "map": MAP_RELATIVE_PATH,
         "projects": draft.parsed().as_data(),

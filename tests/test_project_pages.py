@@ -385,14 +385,62 @@ def test_registration_changes_regenerate_move_and_remove_the_pages(agent_vault, 
         "### frontend",
     ]
 
+    notes = vault / "knowledge/notes"
+    before = (notes / "api-returns-problem-details.md").read_bytes()
+    _note(
+        vault,
+        "old-api-errors",
+        kind="pattern",
+        title="The old API errors",
+        summary="Superseded.",
+        project="product-a",
+        status="superseded",
+    )
+    _note(
+        vault,
+        "other-product-lesson",
+        kind="qa",
+        title="Another product's lesson",
+        summary="Names a project the map does not register.",
+        project="product-z",
+    )
+    untouched = (notes / "other-product-lesson.md").read_bytes()
+
     renamed = _call({"action": "rename", "name": "product-a", "new_name": "product-b"})
     assert renamed["data"]["project_pages"]["deleted"] == ["knowledge/projects/product-a/index.md"]
     assert _pages(vault) == ["general/index.md", "product-b/index.md"]
     assert "### frontend" in _work_state(vault, "product-b")
+    assert renamed["data"]["notes"]["renamed"] == [
+        "knowledge/notes/api-returns-problem-details.md",
+        "knowledge/notes/old-api-errors.md",
+    ]
+    assert "2 notes now name 'product-b'" in renamed["data"]["message"]
+    assert (notes / "api-returns-problem-details.md").read_bytes() == before.replace(
+        b'project: "product-a"', b'project: "product-b"'
+    )
+    assert b'project: "product-b"' in (notes / "old-api-errors.md").read_bytes()
+    assert (notes / "other-product-lesson.md").read_bytes() == untouched
+    renamed_sections = _sections(_page(vault, "product-b"))
+    assert renamed_sections["Patterns"] == [
+        "[[api-returns-problem-details]] — Errors are RFC 9457 problem details."
+    ]
+    assert "Q&A" not in renamed_sections
+    assert _sections(_page(vault, "general"))["Q&A"] == [
+        "[[loose-lesson]] — Belongs to no project.",
+        "[[other-product-lesson]] — Names a project the map does not register.",
+    ]
+    assert "Patterns" not in _sections(_page(vault, "general"))
 
+    renamed_note = (notes / "api-returns-problem-details.md").read_bytes()
     removed = _call({"action": "remove", "name": "product-b"})
     assert removed["data"]["project_pages"]["deleted"] == ["knowledge/projects/product-b/index.md"]
     assert _pages(vault) == ["general/index.md"]
+    assert (notes / "api-returns-problem-details.md").read_bytes() == renamed_note
+    assert removed["data"]["notes"]["unchanged"] == [
+        "knowledge/notes/api-returns-problem-details.md",
+        "knowledge/notes/old-api-errors.md",
+    ]
+    assert "listed on the General page" in removed["data"]["message"]
     general = _sections(_page(vault, "general"))
     assert "[[api-returns-problem-details]] — Errors are RFC 9457 problem details." in general[
         "Patterns"
