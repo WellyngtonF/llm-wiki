@@ -907,19 +907,47 @@ def _unpublished_notes(paths: set[str]) -> set[str]:
     }
 
 
+def _linked_note_target(target: str) -> str | None:
+    """The note a wikilink names: bare, vault-relative, or rooted at the repository.
+
+    A bare `[[slug]]` is read as a flat note, the layout the compile writes; a
+    link with a slash names a note only when its path lies under `notes/`.
+    """
+    target = target.strip().removesuffix(".md")
+    if "/" not in target:
+        return f"knowledge/notes/{target}.md" if target else None
+    for prefix in ("knowledge/notes/", "notes/"):
+        if target.startswith(prefix):
+            return f"knowledge/notes/{target[len(prefix):]}.md"
+    return None
+
+
 def _linked_note_paths(text: str) -> set[str]:
-    """The note pages this file names by path: a wikilink, or a back-quoted path."""
-    linked = re.findall(r"\[\[knowledge/notes/([^\]|]+)", text)
+    """The note pages this file names: a wikilink, or a back-quoted path."""
+    linked = {
+        _linked_note_target(target)
+        for target in re.findall(r"\[\[([^\]|#]+)", text)
+    }
     quoted = re.findall(r"`knowledge/notes/([^`]+?)\.md`", text)
-    return {f"knowledge/notes/{name}.md" for name in [*linked, *quoted]}
+    return {path for path in linked if path} | {
+        f"knowledge/notes/{name}.md" for name in quoted
+    }
 
 
 def test_the_vault_index_and_log_name_only_published_notes() -> None:
     """A running vault rewrites these two files, and they are the only tracked
     knowledge files it writes. If one of them names a page this repository does
     not publish, the page is personal and the file must not be committed."""
-    sample = "- [[knowledge/notes/private-thing]] — a page this repo does not ship.\n"
-    assert _linked_note_paths(sample) == {"knowledge/notes/private-thing.md"}
+    sample = (
+        "- [[private-thing]] — a page this repo does not ship.\n"
+        "- [[notes/private-other|alias]] and [[knowledge/notes/private-old#Part]].\n"
+        "- [[projects/product-a/state]] is not a note.\n"
+    )
+    assert _linked_note_paths(sample) == {
+        "knowledge/notes/private-thing.md",
+        "knowledge/notes/private-other.md",
+        "knowledge/notes/private-old.md",
+    }
 
     leaked = {}
     for name in _VAULT_METADATA_FILES:

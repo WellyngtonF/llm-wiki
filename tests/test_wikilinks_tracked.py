@@ -33,9 +33,7 @@ def test_no_broken_wikilinks_in_tracked_knowledge():
     """Same bar as CI: only files that ship in git."""
     pages = _tracked_knowledge_pages()
     assert pages, "expected tracked knowledge pages"
-    broken = lint_memory.check_broken_links(
-        pages, [lint_memory.VAULT, lint_memory.NOTES]
-    )
+    broken = lint_memory.check_broken_links(pages)
     assert broken == [], (
         "broken wikilinks (or links to untracked/gitignored files):\n"
         + "\n".join(broken)
@@ -48,7 +46,7 @@ def test_untracked_target_is_reported(tmp_path, monkeypatch):
     notes = vault / "knowledge" / "notes"
     notes.mkdir(parents=True)
     page = notes / "alpha.md"
-    page.write_text("# A\n\nSee [[knowledge/projects/demo/secret]].\n", encoding="utf-8")
+    page.write_text("# A\n\nSee [[projects/demo/secret]].\n", encoding="utf-8")
     secret = vault / "knowledge" / "projects" / "demo" / "secret.md"
     secret.parent.mkdir(parents=True)
     secret.write_text("# secret\n", encoding="utf-8")
@@ -61,6 +59,6 @@ def test_untracked_target_is_reported(tmp_path, monkeypatch):
         lint_memory, "_git_tracked_paths", lambda: {"knowledge/notes/alpha.md"}
     )
 
-    broken = lint_memory.check_broken_links([page], [vault / "knowledge", notes])
+    broken = lint_memory.check_broken_links([page])
     assert broken, "expected untracked target to be reported as broken"
     assert any("untracked" in b for b in broken)

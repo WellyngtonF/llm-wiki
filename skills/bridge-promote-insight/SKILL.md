@@ -30,7 +30,7 @@ Procedure:
    Promoted YYYY-MM-DD to [[Wiki Page Title]] (`knowledge/notes/`). This memory page remains as <reason — usually "the dated decision record" or "the fuller origin story">; the wiki page is the concise public-facing <concept/convention/definition>.
    ```
    Then add the wiki page as the first entry in the memory page's `## Related` section.
-5. Confirm the links are reciprocal — the wiki page's `## Related` should contain a `[[knowledge/notes/<slug>]]` wikilink back. Both pages must mention each other; a one-way promotion marker is a bug.
+5. Confirm the wiki page's `## Related` names the memory origin page with a bare `[[<slug>]]` wikilink, so the promotion reads from both sides. Do not write "links to this page" lines anywhere else: Obsidian derives backlinks.
 6. Register the new wiki page in `knowledge/index.md` under the correct section (Concepts / Decisions / Patterns / Debugging / Q&A) and append a dated entry to `knowledge/log.local.md` describing the promotion and citing the memory origin.
 
 Return:

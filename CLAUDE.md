@@ -345,8 +345,10 @@ writes to it. See `docs/research/2026-09-14-the-vault-log-is-private.md`.
 6. Mark uncertainty explicitly.
 7. Track contradictions and superseded claims instead of silently deleting
    history.
-8. Use Obsidian-style wikilinks like `[[Concept Name]]` whenever a stable
-   concept/entity/page exists.
+8. Use Obsidian-style wikilinks whenever a stable concept/entity/page
+   exists: a bare `[[slug]]` naming the note, or a path from `knowledge/`
+   for a file that is not a note. Never write a "links to this page" line;
+   Obsidian derives backlinks (`docs/adr/0003`).
 9. Do not dump raw excerpts into the wiki unless the quote itself matters.
 10. Prefer concise pages that link outward over giant pages that try to hold
     everything.

@@ -530,7 +530,7 @@ def test_index_can_be_built_from_in_memory_note_bytes(vault):
         {"knowledge/notes/pending.md": page},
     )
 
-    assert b"[[knowledge/notes/pending]]" in output
+    assert b"[[pending]]" in output
     assert b"visible before publication" in output
     assert not (root / "knowledge/notes/pending.md").exists()
 

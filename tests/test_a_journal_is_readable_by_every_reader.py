@@ -64,7 +64,6 @@ def test_every_reader_of_a_knowledge_page_shares_one_ceiling() -> None:
     import compile_memory
     import corpus_snapshot
     import rebuild_memory_index
-    import repair_backlinks
     import search_memory
 
     ceilings = {
@@ -77,7 +76,6 @@ def test_every_reader_of_a_knowledge_page_shares_one_ceiling() -> None:
         "search": search_memory.MAX_PAGE_BYTES,
         "after_image": compile_memory.MAX_AFTER_IMAGE_BYTES,
         "index": rebuild_memory_index.MAX_PAGE_BYTES,
-        "backlinks": repair_backlinks.MAX_PAGE_BYTES,
         "access": access_tracking.MAX_ACCESS_PAGE_BYTES,
     }
 

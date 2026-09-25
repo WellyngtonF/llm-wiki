@@ -67,17 +67,15 @@ Do NOT invoke after:
    - Crystallized from `knowledge/daily/<date>.md` block at `[HH:MM:SS]` (verified to support the steps above).
 
    ## Related
-   - [[knowledge/notes/<related-pattern>]]
-   - [[knowledge/notes/<related-decision>]]
+   - [[<related-pattern>]]
+   - [[<related-decision>]]
    ```
 
 5. **Verify evidence**. Before writing, open the cited daily log block and confirm it actually contains the workflow you're describing. Same VERIFY-BEFORE-WRITE rule as compile_memory.py — fabrication is the highest-severity defect.
 
 6. **Update the index**. After creating the playbook, add a line to `knowledge/index.md` under a new or existing `## Workflows` section, with the page stem and the one-sentence summary.
 
-7. **Reciprocal backlinks**. Edit each `## Related` target to add a backlink to the new playbook (unless it already links back).
-
-8. **Do NOT auto-promote to a skill**. `skills/` is for human-curated, stable workflows. Playbooks under `knowledge/notes/` are agent-authored drafts; they earn promotion to a SKILL.md only after explicit user review.
+7. **Do NOT auto-promote to a skill**. `skills/` is for human-curated, stable workflows. Playbooks under `knowledge/notes/` are agent-authored drafts; they earn promotion to a SKILL.md only after explicit user review.
 
 ## Output
 
@@ -85,7 +83,7 @@ End your turn with:
 
 ```
 CRYSTALLIZE_DONE: <n> page(s) touched: <paths>
-CRYSTALLIZE_AUDIT: verified <a> evidence citations; <b> duplicates checked; <c> backlinks added
+CRYSTALLIZE_AUDIT: verified <a> evidence citations; <b> duplicates checked
 ```
 
 If the source task did not yield a reusable workflow (too specific, too one-off), emit:

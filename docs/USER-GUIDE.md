@@ -310,7 +310,7 @@ END OF SESSION (agent idle or you close)
 
 NIGHTLY 03:00 (scheduler, subject to the operating-system login policy)
   Drain deferred queue → consolidate yesterday's session records into the daily
-  log → compile all pending → structural lint → add owed backlinks → rebuild the
+  log → compile all pending → structural lint → rebuild the
   FTS index → refresh the immutable evidence generation (and its vectors) →
   fetch any missing pinned model weights → compact retrieval telemetry →
   prune old reports → fast-forward the checkout
@@ -470,7 +470,7 @@ up too. A compile with work to do prints the window it used:
 ### Linting and maintenance
 
 ```bash
-uv run python scripts/lint_memory.py --scope all           # 16 structural checks
+uv run python scripts/lint_memory.py --scope all           # 15 structural checks
 uv run python scripts/lint_memory.py --contradictions      # + LLM-judged contradictions
 uv run python scripts/archive_stale.py --apply           # archive old pages by type
 uv run python scripts/lookup_mode.py                       # show direct/base/hybrid mode
@@ -485,6 +485,32 @@ written to `knowledge/projects/<slug>/context.md`:
 uv run python scripts/build_context.py --slug my-project           # print it
 uv run python scripts/build_context.py --slug my-project --write   # write the page
 ```
+
+### Migrating existing links for Obsidian (one-off)
+
+Notes written before bare links carry `- [[knowledge/notes/x]] — links to this page.`
+lines and repository-rooted `[[knowledge/notes/x]]` links, which Obsidian (rooted at
+`knowledge/`) cannot open. One command migrates them:
+
+```bash
+uv run --locked --no-sync python scripts/migrate_links.py           # dry run: lists every change
+uv run --locked --no-sync python scripts/migrate_links.py --apply   # write them
+uv run --locked --no-sync python scripts/migrate_links.py --json    # the report as JSON
+```
+
+It removes the backlink lines (and a `## Related` heading left empty by that), and
+rewrites `[[knowledge/notes/x]]`, with or without `.md`, `|alias` or `#heading`, to a
+bare `[[x]]`, and any other `[[knowledge/<path>]]` to `[[<path>]]`. A link is rewritten
+only when its new form opens the file the old one named; when a shallower file of the
+same name exists, the note keeps a `[[notes/x]]` path. Every link that still resolves
+to nothing is listed as `UNRESOLVED` and left as it is — fix those by hand. It reads
+`knowledge/notes`, `knowledge/projects`, `knowledge/inbox` and `knowledge/feedback`;
+daily logs, `knowledge/raw/`, editorial pages and project journals are not touched, nor
+are the `## Claims` ledger, `## Evidence` lines, code fences and inline code.
+
+The dry run writes nothing. `--apply` writes every changed page in one recoverable
+transaction and prints its id; `scripts/markdown_transaction.py undo <id>` reverts the
+whole migration within the 2-day undo window. Running `--apply` again changes nothing.
 
 ### Bounded synchronization
 
