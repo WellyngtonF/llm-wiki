@@ -325,6 +325,9 @@ rerun_installer`. Resync an extra with `uv sync --locked --no-default-groups --i
 
 SUNDAY 04:00 (scheduler)
   Everything nightly does + OKF conformance sweep + archive stale + prune failed queue tasks
+  + consolidate each note with two or more updates into one page: the old prose goes
+  into a collapsed History block, the note ends with its one Claims ledger, and
+  decisions and retired notes are never rewritten
 ```
 
 Windows tasks run only while the current user is logged on. macOS LaunchAgents use
