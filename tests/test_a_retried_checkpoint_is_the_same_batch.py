@@ -41,8 +41,14 @@ def test_a_new_event_does_not_widen_the_batch_a_failed_commit_left(monkeypatch):
     monkeypatch.setattr(integration_adapter, "update_state", update)
     monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
     monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
-    one = integration_adapter.normalize_event("codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one"})
-    two = integration_adapter.normalize_event("codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "two"})
+    # Each turn states a change: a turn that changed nothing appends no checkpoint at all.
+    delta = {"current_task": {"id": "task-1", "action": "upsert", "value": "Ship login"}}
+    one = integration_adapter.normalize_event(
+        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one", "project_delta": delta}
+    )
+    two = integration_adapter.normalize_event(
+        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "two", "project_delta": delta}
+    )
 
     with pytest.raises(TimeoutError):
         integration_adapter._observe_project_checkpoint(one)
