@@ -291,7 +291,10 @@ def _drive_bootstrap_project(d: _Drive) -> None:
     module, monkeypatch, vault, secret = d.module, d.monkeypatch, d.vault, d.secret
     monkeypatch.setattr(module, "ROOT", vault)
     monkeypatch.setattr(module, "PROJECTS_DIR", vault / "knowledge/projects")
-    monkeypatch.setattr(module, "_compute_slug", lambda cwd: "demo")
+    from work_state import Placement
+
+    # Only a registered repository has a folder to bootstrap into (issue #14).
+    monkeypatch.setattr(module, "_placement", lambda cwd: Placement("demo", Path(cwd), "demo"))
     monkeypatch.setattr(module, "_extract_git_timeline", lambda cwd: [])
     monkeypatch.setattr(module, "_extract_readme_summary", lambda cwd: secret)
     monkeypatch.setattr(module, "_extract_tech_stack", lambda cwd: [])
@@ -325,6 +328,9 @@ def _drive_build_context(d: _Drive) -> None:
     monkeypatch.setattr(module, "PROJECTS_DIR", vault / "knowledge/projects")
     monkeypatch.setattr(module, "build_context", lambda *args: secret)
     monkeypatch.setattr(module, "mutate_knowledge", d.boundary)
+    # `--write` writes only for a registered project (issue #14).
+    (vault / "knowledge/projects").mkdir(parents=True, exist_ok=True)
+    (vault / "knowledge/projects/project-map.md").write_text("## demo\n", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["build_context.py", "demo", "--write"])
     d.function()
 
@@ -435,11 +441,15 @@ def _drive_session_start_project_state(d: _Drive) -> None:
     template = projects_dir / "_template" / "state.md"
     template.parent.mkdir(parents=True)
     template.write_text(
-        "# <Project Name>\n- Project root: `<absolute-path>`\n", encoding="utf-8"
+        "# <project>/<repository>\n- Project root: `<absolute-path>`\n", encoding="utf-8"
     )
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
     monkeypatch.setattr(module, "mutate_knowledge", d.boundary)
-    d.function(vault, projects_dir, project, "demo", projects_dir / "demo" / "state.md")
+    from work_state import Placement
+
+    d.function(
+        vault, Placement("demo", project, "project"), projects_dir / "demo" / "project" / "state.md"
+    )
 
 
 def _drive_tool_breadcrumb_append(d: _Drive) -> None:
@@ -1282,7 +1292,7 @@ def _race_changes_a_page(notes: Path) -> None:
 
 # race -> (what happens under the writer, texts the index must name, texts it must not)
 _TREE_RACES = {
-    "add": (_race_adds_a_page, ("[[knowledge/notes/added]]", "added summary"), ()),
+    "add": (_race_adds_a_page, ("[[added]]", "added summary"), ()),
     "delete": (_race_deletes_a_page, (), ("victim", "delete me")),
     "change": (_race_changes_a_page, ("fresh summary",), ("old summary",)),
 }

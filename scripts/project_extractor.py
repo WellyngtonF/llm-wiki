@@ -18,7 +18,7 @@ from knowledge_extractor import (
     _node,
     _occurrence,
 )
-from project_journal import parse_journal_events
+from project_journal import parse_journal_events, recorded_journal_key
 from reliable_memory import canonical_json_bytes
 
 EXTRACTOR_VERSION = "project-extractor/v1"
@@ -199,7 +199,10 @@ class _ProjectExtraction:
         path = source.record.relative_path
         if not path.endswith("/journal.md") or "/projects/" not in path:
             return
-        self._add_journal(source, path.rsplit("/", 2)[-2])
+        # The events name their journal; the folder is only where it lives now,
+        # one level down in the project layout (`<project>/<repository>/`).
+        key = recorded_journal_key(source.content) or path.rsplit("/", 2)[-2]
+        self._add_journal(source, key)
 
     def _add_journal(self, source: CapturedSource, slug: str) -> None:
         project_id = _identifier("project", slug)

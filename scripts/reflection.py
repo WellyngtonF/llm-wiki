@@ -11,6 +11,8 @@ historical pages are REWRITTEN as the corpus grows, not just appended to.
 Trigger: pages with >= REFLECTION_THRESHOLD Update sections.
 Safety: old body is NEVER deleted — moved to ## History.
 LLM: one call per page. Content is rewritten from existing text only.
+Claims: the model and the history block see prose only; the page ends with its one
+merged Claims ledger, which the pass writes itself.
 
 Usage:
     uv run python scripts/reflection.py              # dry-run (show candidates)
@@ -19,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from datetime import datetime
@@ -26,9 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bounded_io import read_stable_bytes  # noqa: E402
+from claims import parse_claim_ledger  # noqa: E402
 from markdown_transaction import mutate_knowledge, stable_operation_id  # noqa: E402
 from memory_state import ROOT  # noqa: E402
-from reliable_memory import sha256_bytes  # noqa: E402
+from reliable_memory import canonical_json_bytes, sha256_bytes  # noqa: E402
 from secret_redact import redact_secrets  # noqa: E402
 
 KNOWLEDGE = ROOT / "knowledge" / "notes"
@@ -39,13 +43,21 @@ MAX_REFLECTION_PAGE_BYTES = 16 * 1024 * 1024
 # A rewrite shorter than this is a refusal or a fragment, not a page.
 MIN_REFLECTED_WORDS = 40
 SUMMARY_PREFIX = "One-sentence summary:"
-# The heading of the block this pass appends; the page's live body ends where it begins.
+# The heading and closing line of the block this pass appends; the live body lies outside it.
 HISTORY_MARKER = "\n## History (pre-reflection"
+HISTORY_CLOSE = "\n</details>"
 _UNTOUCHED_FRONTMATTER = ("status: superseded", "status: archived", "type: decision")
 
 UPDATE_SECTION_RE = re.compile(r"^## Update \(\d{4}-\d{2}-\d{2}\)", re.MULTILINE)
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+CLAIMS_HEADING_RE = re.compile(r"(?m)^## Claims[ \t]*\r?$")
+# A ledger wherever it stands, with the blank lines after it. `claims.CLAIM_LEDGER_RE` also
+# requires what follows the fence, and a ledger an earlier pass left inside `<details>` is
+# followed by `</details>` — yet it still counts as the page's second Claims heading.
+LEDGER_BLOCK_RE = re.compile(
+    r"(?m)^## Claims[ \t]*\r?\n```json[ \t]*\r?\n([^\r\n]+)\r?\n```[ \t]*(?:\r?\n|\Z)(?:[ \t]*\r?\n)*"
+)
 
 
 def find_reflection_candidates() -> list[dict]:
@@ -82,13 +94,13 @@ def _title_of(content: str, fallback: str) -> str:
 
 
 def _live_body(content: str) -> str:
-    """The page before this pass's own history block: what a reader sees as the page.
+    """The page outside this pass's own history blocks: what a reader sees as the page.
 
-    The preserved original inside the block still holds its `## Update` sections; counting
+    The preserved original inside a block still holds its `## Update` sections; counting
     them would reflect a page again every week. See
     `docs/research/2026-09-17-a-reflection-is-checked-before-it-is-written.md`.
     """
-    return content.split(HISTORY_MARKER, 1)[0]
+    return _live_and_earlier(content)[0]
 
 
 def _reflectable_text(md: Path) -> str | None:
@@ -129,12 +141,21 @@ def reflect_page(md: Path, apply: bool = False) -> str:
         return f"  {md.stem}: a decision or a retired page is never rewritten, skipping."
     frontmatter, body = _split_frontmatter(content)
     live, earlier = _live_and_earlier(body)
-    updates = UPDATE_SECTION_RE.findall(live)
-    rewritten, message = _reflection(md, live, len(updates), apply)
+    try:
+        prose, ledgers = _without_ledgers(live)
+        earlier, earlier_ledgers = _without_ledgers(earlier)
+        ledger = _merged_ledger(ledgers + earlier_ledgers)
+    except ValueError as error:
+        return f"  {md.stem}: not reflected — {error}."
+    updates = UPDATE_SECTION_RE.findall(prose)
+    rewritten, message = _reflection(md, prose, len(updates), apply)
     if rewritten is None:
         return message
-    page = _reflected_page(md, frontmatter, live, rewritten) + earlier
+    page = (_reflected_page(md, frontmatter, prose, rewritten) + earlier).rstrip() + "\n" + ledger
     encoded = redact_secrets(page).encode("utf-8")
+    refused = _unreadable_ledger(encoded, bool(ledger))
+    if refused is not None:
+        return f"  {md.stem}: rewrite not written — {refused}."
     mutate_knowledge(
         stable_operation_id("reflection", md.relative_to(ROOT).as_posix(), encoded),
         {md: encoded},
@@ -146,9 +167,61 @@ def reflect_page(md: Path, apply: bool = False) -> str:
 
 
 def _live_and_earlier(body: str) -> tuple[str, str]:
-    """The body a reader sees, and the history blocks of earlier passes, kept as they are."""
-    live, marker, earlier = body.partition(HISTORY_MARKER)
-    return live, marker + earlier
+    """The body a reader sees, and the history blocks of earlier passes, kept as they are.
+
+    Compile appends each update at the end of the page, after the history blocks and the
+    ledger, so the live body is the text before the first block plus the text after the last.
+    """
+    head, marker, rest = body.partition(HISTORY_MARKER)
+    close = rest.rfind(HISTORY_CLOSE)
+    if not marker or close < 0:
+        return head, marker + rest
+    end = close + len(HISTORY_CLOSE)
+    tail = rest[end:].strip("\n")
+    live = head.rstrip("\n") + "\n\n" + tail + "\n" if tail else head
+    return live, marker + rest[:end]
+
+
+def _without_ledgers(text: str) -> tuple[str, list[dict]]:
+    """The text with every Claims ledger taken out, and those ledgers in page order."""
+    blocks = list(LEDGER_BLOCK_RE.finditer(text))
+    if len(blocks) != len(CLAIMS_HEADING_RE.findall(text)):
+        raise ValueError("a Claims heading holds no readable ledger")
+    return LEDGER_BLOCK_RE.sub("", text), [_ledger_of(block[1]) for block in blocks]
+
+
+def _ledger_of(line: str) -> dict:
+    ledger = json.loads(line)
+    claims = ledger.get("claims") if isinstance(ledger, dict) else None
+    if not isinstance(claims, list) or not all(isinstance(item, dict) and "id" in item for item in claims):
+        raise ValueError("a Claims ledger holds no claim list")
+    return ledger
+
+
+def _merged_ledger(ledgers: list[dict]) -> str:
+    """One Claims section holding every claim of the page once; "" when the page has none."""
+    if not ledgers:
+        return ""
+    versions = {ledger.get("schema_version") for ledger in ledgers}
+    if len(versions) != 1:
+        raise ValueError("the Claims ledgers disagree on their schema")
+    by_id: dict[str, dict] = {}
+    for record in (item for ledger in ledgers for item in ledger["claims"]):
+        if by_id.setdefault(str(record["id"]), record) != record:
+            raise ValueError(f"claim {record['id']} differs between the Claims ledgers")
+    merged = canonical_json_bytes({"schema_version": versions.pop(), "claims": list(by_id.values())})
+    return "\n## Claims\n```json\n" + merged.decode("utf-8") + "\n```\n"
+
+
+def _unreadable_ledger(page: bytes, has_ledger: bool) -> str | None:
+    """Why the page about to be written lacks the one readable ledger it should have, or None."""
+    try:
+        ledger = parse_claim_ledger(page)
+    except ValueError as error:
+        return f"its Claims ledger would not parse ({error})"
+    if has_ledger and ledger is None:
+        return "its Claims ledger would be lost"
+    return None
 
 
 def _split_frontmatter(content: str) -> tuple[str, str]:
@@ -193,6 +266,7 @@ def _why_not_written(body: str, rewritten: str) -> str | None:
         (SUMMARY_PREFIX in body and SUMMARY_PREFIX not in rewritten, "the summary line is gone"),
         (bool(UPDATE_SECTION_RE.search(rewritten)), "an update section was left unintegrated"),
         (HISTORY_MARKER.strip() in rewritten, "the reply carries its own history block"),
+        (bool(CLAIMS_HEADING_RE.search(rewritten)), "the reply carries a Claims section"),
     )
     return next((reason for failed, reason in checks if failed), None)
 
@@ -208,7 +282,8 @@ Rules:
    "## Update" section behind.
 3. Keep the same title, the "One-sentence summary:" line, and evidence sections.
 4. Do NOT add a history section: the original is preserved for you.
-5. Target 150-400 words.
+5. Do NOT add a claims section: the claims ledger is kept for you.
+6. Target 150-400 words.
 
 === PAGE TO REWRITE ===
 {body}
@@ -220,11 +295,11 @@ Return ONLY the rewritten markdown — no commentary.
 
 
 def _reflected_page(md: Path, frontmatter: str, body: str, rewritten: str) -> str:
-    """Frontmatter, the titled rewrite, then the original body under a dated History section."""
+    """Frontmatter, the titled rewrite, then the original prose under a dated History section."""
     new_content = frontmatter + _titled(rewritten, body, md.stem).rstrip() + "\n"
     now = datetime.now().strftime("%Y-%m-%d")
     history_header = f"\n\n## History (pre-reflection {now})\n"
-    return new_content + f"{history_header}<details>\n<summary>Original page before reflection</summary>\n\n{body}\n\n</details>\n"
+    return new_content + f"{history_header}<details>\n<summary>Original page before reflection</summary>\n\n{body.strip()}\n\n</details>\n"
 
 
 def _titled(rewritten: str, body: str, stem: str) -> str:

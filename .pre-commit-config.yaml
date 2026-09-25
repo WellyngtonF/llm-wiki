@@ -32,7 +32,7 @@ repos:
         # still appear in the lint report for visibility, but the
         # commit proceeds. To force them blocking again, narrow this
         # list back to just `orphan_daily_logs`.
-        entry: uv run --locked --no-sync python scripts/lint_memory.py --fail-on-findings --allowed-categories orphan_daily_logs missing_backlinks missing_sources_section temporal_validity
+        entry: uv run --locked --no-sync python scripts/lint_memory.py --fail-on-findings --allowed-categories orphan_daily_logs missing_sources_section temporal_validity
         language: system
         pass_filenames: false
         files: ^knowledge/.*\.md$
@@ -41,7 +41,7 @@ repos:
           orphan_pages, missing_frontmatter, missing_required_type,
           invalid_supersede_chain, orphan_gaps (the categories that
           indicate real structural breakage). Pre-existing debt
-          (missing_backlinks, missing_sources_section) is allowed
+          (missing_sources_section) is allowed
           through — tracked separately for cleanup.
 
       # Contradict-check — LLM-judged, paid, runs on push

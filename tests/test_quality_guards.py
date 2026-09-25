@@ -234,16 +234,22 @@ def _assert_qmd_code_is_gone() -> None:
     assert not re.search(r"\bqmd\b", lookup_mode, re.IGNORECASE)
 
 
-def _assert_no_bundled_obsidian_files() -> None:
+def _assert_obsidian_files_are_viewer_only() -> None:
+    """ADR 0003: viewer files (CSS snippets) may ship; nothing that makes Obsidian required.
+
+    Plugins, templates and ingestion wiring would put Obsidian in the path agents
+    depend on, so only stylesheets are allowed here.
+    """
     obsidian_integration = ROOT / "integrations" / "obsidian"
     bundled = [path for path in obsidian_integration.rglob("*") if path.is_file()]
-    assert not bundled, f"bundled Obsidian integration files found: {bundled}"
+    not_viewer = [path for path in bundled if path.suffix != ".css"]
+    assert not not_viewer, f"Obsidian integration files beyond viewer CSS found: {not_viewer}"
 
 
 def _assert_tool_count_everywhere() -> None:
     from mcp_server import TOOL_INPUT_SCHEMAS
 
-    assert len(TOOL_INPUT_SCHEMAS) == 12
+    assert len(TOOL_INPUT_SCHEMAS) == 13
     for relative_path in _TOOL_COUNT_DOCS:
         _assert_tool_count_documented(relative_path, len(TOOL_INPUT_SCHEMAS))
 
@@ -252,7 +258,7 @@ def test_no_qmd_refs_in_skills():
     _assert_qmd_code_is_gone()
     _assert_docs_clean(_QMD_FREE_DOCS, _assert_no_qmd_claim)
     _assert_docs_clean(_WEB_CLIPPER_FREE_DOCS, _assert_no_web_clipper_claim)
-    _assert_no_bundled_obsidian_files()
+    _assert_obsidian_files_are_viewer_only()
     _assert_tool_count_everywhere()
 
 

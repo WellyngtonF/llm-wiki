@@ -63,7 +63,7 @@ provider：OpenCode、Codex、Claude 和 OpenAI 可能使用云服务；Ollama �
 - **密钥脱敏**——API 密钥、令牌、长 base64 字符串在任何写入前清除
 
 ### Agent-native 接口
-- **MCP-first 访问**——12 个本地 task-shaped 工具，覆盖 recall、上下文、决策、维护、代码智能和 `doctor`
+- **MCP-first 访问**——13 个本地 task-shaped 工具，覆盖 recall、上下文、决策、维护、代码智能和 `doctor`
 - **统一 response envelope**——每个工具返回 schema version、freshness、evidence quality、warnings 和 data；MCP resources 提供 health 与 context
 - **自动健康检查**——健康时 SessionStart 保持静默，仅注入 degraded/error 结果；`doctor(repair=true)` 只执行安全、幂等的本地修复
 
@@ -101,7 +101,7 @@ provider：OpenCode、Codex、Claude 和 OpenAI 可能使用云服务；Ollama �
 - **智能体时间线**——归因：哪个智能体何时做了什么决策
 
 ### 维护
-- **16 项 lint 检查（15 项结构性 + 1 项 LLM 判定矛盾）**——损坏的 wikilinks、孤儿页面、未编译日志、缺失反向链接、稀疏页面、缺失 frontmatter、缺失或无效 type、缺失来源、无效 supersede 链、孤立 gap、时间有效性、无法解析的证据、无效 claim 模式、矛盾
+- **16 项 lint 检查（15 项结构性 + 1 项 LLM 判定矛盾）**——损坏的 wikilinks、孤儿页面、未编译日志、稀疏页面、缺失 frontmatter、无法读取的 frontmatter、缺失或无效 type、缺失来源、无效 supersede 链、孤立 gap、时间有效性、无法解析的证据、无效 claim 模式、矛盾
 - **类型感知归档**——debugging 60 天、patterns 180 天、decisions 永不
 - **Nightly + weekly 计划**——编译、lint、归档、OKF 迁移（Windows 使用 Task Scheduler，macOS 使用 LaunchAgent，Linux 使用用户级 systemd；cron 仅作为显式降级回退）
 - **OKF v0.1 frontmatter**——`type`、`confidence`、`source_authority`、`supersede` 字段；从遗留页面自动迁移
@@ -328,7 +328,7 @@ BM25 门禁（112 条生成查询和 60 条冻结查询）已于 2026-09-10 随�
 
 ### MCP 智能体接口
 
-本地 stdio MCP 服务器提供 **12 个 task-shaped 工具**，包括 `doctor`，并统一使用 response envelope 和 health/context resources。`find_dead_code(directory)` 返回保守候选项，`get_architecture(directory)` 返回入口点、路由、基于 canonical symbol ID 的热点和社区。文件系统分析要求显式提供存在的非根目录，且绝不回退到进程 CWD。
+本地 stdio MCP 服务器提供 **13 个 task-shaped 工具**，包括 `doctor`，并统一使用 response envelope 和 health/context resources。`find_dead_code(directory)` 返回保守候选项，`get_architecture(directory)` 返回入口点、路由、基于 canonical symbol ID 的热点和社区。文件系统分析要求显式提供存在的非根目录，且绝不回退到进程 CWD。
 
 精确模式 `definition`、`references`、`implementations`、`type`、
 `diagnostics` 以及带位置的 `callers`/`callees` 使用四个固定的受管语言服务器：

@@ -30,7 +30,7 @@ import integration_hook_config as _hook_config
 import process_liveness
 import reliable_memory
 from bounded_io import read_stable_bytes
-from evidence_resolver import _daily_part_bounds
+from evidence_resolver import daily_pieces_compiled
 from install_control import validate_install_state
 from reliable_memory import (
     open_readonly_operational_db,
@@ -1474,10 +1474,8 @@ class _CompiledDaySupersession:
 
     def _day_compiled(self, logical_path: str, committed_creates: set[str]) -> bool:
         content = read_stable_bytes(self.vault_root / logical_path, _MAX_DAY_BYTES, label="daily source")
-        bounds = _daily_part_bounds(content)
-        return bool(bounds) and all(
-            _part_receipt_path(logical_path, content[start:end]) in committed_creates
-            for start, end in bounds
+        return daily_pieces_compiled(
+            content, lambda piece: _part_receipt_path(logical_path, piece) in committed_creates
         )
 
 
@@ -4768,6 +4766,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
         capture_dropped_totals,
         capture_failure_is_live,
         capture_failure_totals,
+        deferred_compile_pieces,
         last_capture_failure_at,
     )
 
@@ -4793,11 +4792,34 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
             + state_size_hint(state_root),
             details,
         )
+    details["deferred_pieces"] = deferred_compile_pieces(state)
     adoption = _adoption_state(root, state_root)
     details["adoption_state"] = adoption
     if adoption not in {"adopted", "unknown"}:
         return _result("capture", "degraded", _capture_disabled_message(adoption), details)
-    return _capture_loss_result(lost, live, details)
+    result = _capture_loss_result(lost, live, details)
+    result["message"] += _deferred_pieces_sentence(details["deferred_pieces"])
+    return result
+
+
+def _deferred_pieces_sentence(pieces: list[dict]) -> str:
+    """Informational: a piece too large for the compile window is pending, not lost."""
+    if not pieces:
+        return ""
+    needed = max(_whole(piece.get("needed_window_tokens")) for piece in pieces)
+    named = ", ".join(
+        f"{piece.get('path')} ({_whole(piece.get('bytes'))} bytes)" for piece in pieces[:3]
+    )
+    more = f" and {len(pieces) - 3} more" if len(pieces) > 3 else ""
+    return (
+        f" {len(pieces)} daily-log piece(s) deferred as too large for the compile "
+        f"window, not lost: {named}{more}. They stay pending and every compile "
+        f"retries them; set {pieces[0].get('setting')} to at least {needed} to compile them."
+    )
+
+
+def _whole(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _adoption_state(root: Path, state_root: Path) -> str:
@@ -5177,6 +5199,41 @@ def _mcp_check(root: Path) -> dict:
         "core_capture_required": False,
     }
     return _result("mcp", _ok_or_error(source), _mcp_message(source), details)
+
+
+MAX_REPORTED_MAP_PROBLEMS = 20
+
+
+def _project_map_check(root: Path) -> dict:
+    """Entries of the owner's project map that no lookup can use (ADR 0002)."""
+    from project_map import (
+        MAP_RELATIVE_PATH,
+        ProjectMapError,
+        project_map_problems,
+        read_project_map,
+    )
+
+    details: dict = {"map": MAP_RELATIVE_PATH, "present": (root / MAP_RELATIVE_PATH).is_file()}
+    if not details["present"]:
+        return _result("projects", "ok", "No project is registered yet.", details)
+    try:
+        problems = [problem.as_data() for problem in project_map_problems(root)]
+        details["projects"] = len(read_project_map(root).projects)
+    except ProjectMapError as error:
+        details["problems"] = [{"code": error.code, "message": str(error)}]
+        return _result("projects", "degraded", f"The project map cannot be read: {error}", details)
+    details["problem_count"] = len(problems)
+    details["problems"] = problems[:MAX_REPORTED_MAP_PROBLEMS]
+    if not problems:
+        return _result("projects", "ok", "The project map is valid.", details)
+    codes = ", ".join(sorted({problem["code"] for problem in problems}))
+    return _result(
+        "projects",
+        "degraded",
+        f"The project map has {len(problems)} invalid entr"
+        f"{'y' if len(problems) == 1 else 'ies'} ({codes}); edit {MAP_RELATIVE_PATH}.",
+        details,
+    )
 
 
 def _readable_config(path: Path) -> bool:
@@ -7942,6 +7999,7 @@ def _deferrable_checks(
         ("hooks", lambda _budget: _hook_error_check(state_path, generated_at)),
         ("checkpoints", lambda _budget: _checkpoint_check(state_path, generated_at)),
         ("mcp", lambda _budget: _mcp_check(root_path)),
+        ("projects", lambda _budget: _project_map_check(root_path)),
         (
             "integrations",
             lambda budget: _integration_check(root_path, home_path, deadline=budget),

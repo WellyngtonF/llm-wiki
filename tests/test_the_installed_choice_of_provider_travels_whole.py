@@ -49,6 +49,25 @@ def test_the_codex_model_and_reasoning_travel_too(monkeypatch) -> None:
     assert _install_environment(monkeypatch, chosen) == chosen
 
 
+def test_the_compile_context_window_travels_with_the_model(monkeypatch) -> None:
+    """The nightly compiles with the window the installed model has (issue #2)."""
+    import install_control
+
+    chosen = {
+        "MEMORY_LLM_PROVIDER": "codex",
+        "MEMORY_CODEX_MODEL": "gpt-5.6-sol",
+        "MEMORY_COMPILE_CONTEXT_TOKENS": "272000",
+    }
+
+    assert _install_environment(monkeypatch, chosen) == chosen
+    resources = install_control.windows_environment_resources(
+        Path("vault"), Path("vault"), read_value=lambda _name: None, write_value=lambda *_a: None
+    )
+    assert "windows-user-env://MEMORY_COMPILE_CONTEXT_TOKENS" in {
+        resource.locator for resource in resources
+    }
+
+
 def test_a_key_is_never_written_into_a_unit_or_a_settings_file(monkeypatch) -> None:
     """A secret on disk is a secret in every backup of the vault."""
     monkeypatch.setenv("MEMORY_LLM_API_KEY", "sk-should-not-travel")

@@ -41,7 +41,7 @@ def test_the_intent_carries_the_moment_the_session_ended():
         {"session_id": "s-1", "reason": "clear", "timestamp": YESTERDAY.isoformat()},
     )
 
-    source = integration_adapter._capture_source_record(envelope, "slug", "clear", "text")
+    source = integration_adapter._capture_source_record(envelope, None, "clear", "text")
 
     assert source["occurred_at"] == YESTERDAY.isoformat()
 

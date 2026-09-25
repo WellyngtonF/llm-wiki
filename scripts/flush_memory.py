@@ -882,16 +882,40 @@ def _capture_text(value: object, fallback: str) -> str:
     return fallback
 
 
+def _capture_location_lines(record: Mapping[str, object]) -> str:
+    """Which registered project and repository the session worked in, if any.
+
+    The adapter records the project only for a repository the project map lists,
+    and then records the repository's main checkout as the worktree, so a daily
+    entry names both and a session outside any project names neither (ADR 0002).
+    """
+    project = record.get("project_slug")
+    if not isinstance(project, str) or not project:
+        return ""
+    lines = f"- Project: `{project}`\n"
+    repository = record.get("worktree")
+    if isinstance(repository, str) and repository:
+        lines += f"- Repository: `{repository}`\n"
+    return lines
+
+
 def _capture_daily_block(
-    record: Mapping[str, object], tier: str, body: str, chosen_at: datetime
+    record: Mapping[str, object],
+    tier: str,
+    body: str,
+    chosen_at: datetime,
+    *,
+    located: bool = True,
 ) -> str:
     event = _capture_text(record["event"], "session_end").replace("_", "-")
     session = _capture_text(record["session"], "unknown")
     trigger = _capture_text(record["trigger"], event)
     header = f"\n## [{chosen_at.strftime('%H:%M:%S')}] {event} | {session}\n"
+    location = _capture_location_lines(record) if located else ""
     metadata = (
         f"- Trigger: `{trigger}`\n"
         f"- Agent: `{record['host']}`\n"
+        f"{location}"
         f"- Capture intent: `{record['intent_id']}`\n"
         f"- Tier: `{tier}`\n\n"
     )
@@ -899,7 +923,12 @@ def _capture_daily_block(
 
 
 def _dated_capture_block(
-    record: Mapping[str, object], tier: str, body: str, chosen_at: datetime
+    record: Mapping[str, object],
+    tier: str,
+    body: str,
+    chosen_at: datetime,
+    *,
+    located: bool = True,
 ) -> str:
     """The block, followed by the dates it mentions resolved against its own day.
 
@@ -907,7 +936,7 @@ def _dated_capture_block(
     queued entry had its dates resolved. See
     `docs/research/2026-09-17-a-queued-entry-resolves-its-dates-too.md`.
     """
-    block = _capture_daily_block(record, tier, body, chosen_at)
+    block = _capture_daily_block(record, tier, body, chosen_at, located=located)
     return _dated_block(chosen_at.strftime("%Y-%m-%d"), block)
 
 
@@ -923,6 +952,7 @@ def _capture_operation_plan(
     chosen_at: datetime | None,
     *,
     dated: bool = True,
+    located: bool = True,
 ) -> list[dict[str, object]]:
     from reliable_memory import sha256_bytes
 
@@ -932,7 +962,7 @@ def _capture_operation_plan(
         raise ValueError("durable capture decision requires a chosen time")
     chosen = _require_capture_time(chosen_at)
     build_block = _CAPTURE_BLOCK_BUILDERS[dated]
-    block = build_block(record, tier, body, chosen)
+    block = build_block(record, tier, body, chosen, located=located)
     path = f"knowledge/daily/{chosen.strftime('%Y-%m-%d')}.md"
     return [
         {
@@ -966,10 +996,12 @@ def _require_capture_decision_semantics(
     if actual != expected:
         raise RuntimeError("capture decision outcome is invalid")
     chosen_at = _capture_decision_time(decision)
-    # A decision stored before the dates were resolved is still a valid decision.
+    # A decision stored before the dates were resolved, or before the entry named
+    # its project and repository, is still a valid decision.
     plans = [
-        _capture_operation_plan(intent, tier, body, chosen_at, dated=dated)
+        _capture_operation_plan(intent, tier, body, chosen_at, dated=dated, located=located)
         for dated in (True, False)
+        for located in (True, False)
     ]
     if decision["operation_plan"] not in plans:
         raise RuntimeError("capture decision operation plan is invalid")

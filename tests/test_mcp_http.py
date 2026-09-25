@@ -266,12 +266,12 @@ async def _listed_tool_names() -> set:
     return {tool["name"] for tool in payload["result"]["tools"]}
 
 
-def test_the_http_surface_lists_the_same_twelve_tools_as_stdio():
+def test_the_http_surface_lists_the_same_thirteen_tools_as_stdio():
     import mcp_server
 
     over_http = asyncio.run(_listed_tool_names())
     assert over_http == {tool.name for tool in mcp_server._build_tool_definitions()}
-    assert len(over_http) == 12
+    assert len(over_http) == 13
 
 
 def test_a_tool_call_over_http_returns_the_stdio_envelope(monkeypatch):

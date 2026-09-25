@@ -98,6 +98,7 @@ VALID_TOOL_CALLS = {
     "find_dead_code": {"directory": "C:\\project"},
     "get_architecture": {"directory": "C:\\project"},
     "doctor": {"action": "status"},
+    "manage_project": {"action": "list"},
 }
 
 TOOL_HELPERS = {
@@ -113,6 +114,7 @@ TOOL_HELPERS = {
     "find_dead_code": "_find_dead_code",
     "get_architecture": "_get_architecture",
     "doctor": "_doctor",
+    "manage_project": "_manage_project",
 }
 
 
@@ -154,6 +156,9 @@ WRONG_TYPE_CALLS = [
     ("find_dead_code", {"directory": 1}),
     ("get_architecture", {"directory": 1}),
     ("doctor", {"action": "status", "repair": True}),
+    ("manage_project", {"action": "create", "name": 1}),
+    ("manage_project", {"action": "rename", "name": "alpha"}),
+    ("manage_project", {"action": "list", "name": "alpha"}),
 ]
 
 
@@ -167,6 +172,7 @@ def _assert_task_shaped_names(names) -> None:
         "find_dead_code",
         "get_architecture",
         "doctor",
+        "manage_project",
     ):
         assert expected in names
 
@@ -212,7 +218,7 @@ def _assert_context_array_bounds(slugs, include) -> None:
 
 
 class TestToolDefinitions:
-    def test_tool_inventory_remains_exactly_the_canonical_twelve(self):
+    def test_tool_inventory_remains_exactly_the_canonical_thirteen(self):
         import mcp_server
 
         assert list(mcp_server.TOOL_INPUT_SCHEMAS) == [
@@ -228,6 +234,7 @@ class TestToolDefinitions:
             "find_dead_code",
             "get_architecture",
             "doctor",
+            "manage_project",
         ]
 
     """Test MCP tool definitions."""
@@ -238,12 +245,12 @@ class TestToolDefinitions:
         # Returns empty list if mcp not installed, or list of Tool objects
         assert isinstance(tools, list)
 
-    def test_twelve_tools_defined(self):
-        """Should define exactly 12 task-shaped tools."""
+    def test_thirteen_tools_defined(self):
+        """Should define exactly 13 task-shaped tools."""
         from mcp_server import _build_tool_definitions
         tools = _build_tool_definitions()
         if tools:  # Only check if mcp package is installed
-            assert len(tools) == 12
+            assert len(tools) == 13
 
     def test_tool_names_are_task_shaped(self):
         """Tools should be named after tasks, not entities."""
@@ -332,7 +339,7 @@ class TestToolDefinitions:
         assert len(modes["enum"]) == len(canonical)
         tools = mcp_server._build_tool_definitions()
         if tools:
-            assert len(tools) == 12
+            assert len(tools) == 13
 
     def test_code_tools_allow_explicit_live_fallback_without_adding_tools(self):
         import mcp_server
@@ -376,7 +383,7 @@ class TestToolDefinitions:
         assert recall["properties"]["profile"]["enum"] == list(
             retrieval.PROFILES
         )
-        assert len(mcp_server.TOOL_INPUT_SCHEMAS) == 12
+        assert len(mcp_server.TOOL_INPUT_SCHEMAS) == 13
 
     def test_importing_mcp_server_does_not_import_query_memory(self):
         scripts = Path(__file__).resolve().parent.parent / "scripts"
@@ -1902,6 +1909,7 @@ class TestHandleToolCall:
             "find_dead_code": {"ok": True},
             "get_architecture": {"ok": True},
             "doctor": {"overall_status": "ok"},
+            "manage_project": {"status": "ok"},
         }
         seen = []
 
@@ -2793,6 +2801,7 @@ class TestHandleToolCall:
         monkeypatch.setattr(mcp_server, "_find_dead_code", lambda *args: {"ok": True})
         monkeypatch.setattr(mcp_server, "_get_architecture", lambda *args: {"ok": True})
         monkeypatch.setattr(mcp_server, "_doctor", lambda **kwargs: {"overall_status": "ok"})
+        monkeypatch.setattr(mcp_server, "_manage_project", lambda *args, **kwargs: {"status": "ok"})
         for name, arguments in VALID_TOOL_CALLS.items():
             envelope = json.loads(self._run(name, arguments))
             assert set(envelope) == ENVELOPE_FIELDS, name

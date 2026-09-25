@@ -115,24 +115,29 @@ def _read_hook_input() -> dict:
 
 
 def _compute_slug_from_cwd(cwd: str) -> str:
-    """Resolve project slug using the existing 5-step collision logic.
+    """`<project>/<repository>` for a registered repository, `-` for anything else.
 
-    Reuses session_start_project_state._compute_slug so prompts are
-    tagged with the SAME slug that state.md uses — no drift.
+    The same rule as the work state's own folder (`work_state.daily_tag`), so a
+    prompt names the repository whose journal the session writes, and a prompt
+    from unregistered work names no project (ADR 0002).
     """
-    projects_dir = ROOT / "knowledge" / "projects"
     try:
         sys.path.insert(0, str(ROOT / "scripts"))
-        from session_start_project_state import _compute_slug  # type: ignore
+        from work_state import daily_tag  # type: ignore
 
-        return _compute_slug(Path(cwd).resolve(), projects_dir)
+        return daily_tag(ROOT, cwd)
     except Exception:  # noqa: BLE001
-        # Fall back to parent-dir name lowercased — same as the
-        # first step of the full slug algorithm.
-        try:
-            return Path(cwd).resolve().name.lower().replace(" ", "-")
-        except Exception:  # noqa: BLE001
-            return "unknown"
+        return "-"
+
+
+def _dedupe_scope(slug: str, cwd: str) -> str:
+    """The tag, or for unregistered work the directory, so two of them never coalesce."""
+    if slug != "-":
+        return slug
+    try:
+        return str(Path(cwd).resolve())
+    except Exception:  # noqa: BLE001
+        return str(cwd)
 
 
 def _claim_prompt_operation(
@@ -318,7 +323,7 @@ def _prompt_envelope(hook: dict, safe_prompt: str, slug: str):
         payload={"prompt": safe_prompt},
         agent=_optional_string(hook.get("agent")),
         session=str(source_session) if source_session is not None else None,
-        project=slug if source_cwd else None,
+        project=slug if source_cwd and slug != "-" else None,
         worktree=str(source_cwd) if source_cwd else None,
         severity=_optional_string(hook.get("severity")),
         parent_event_id=_optional_string(hook.get("parent_event_id")),
@@ -344,14 +349,15 @@ def _record_prompt(hook: dict, prompt: str) -> None:
     """Claim, append, and complete one prompt capture."""
     session_id = _hook_session(hook)
     slug = _compute_slug_from_cwd(_hook_cwd(hook))
+    scope = _dedupe_scope(slug, _hook_cwd(hook))
     envelope = _prompt_envelope(hook, redact_secrets(prompt), slug)
-    _maybe_periodic_work(hook, session_id, _increment_prompt_count(session_id, slug))
+    _maybe_periodic_work(hook, session_id, _increment_prompt_count(session_id, scope))
 
     # Rate-limit by the redacted payload hash so capture state cannot
     # become a side channel for source secrets.
     prompt_hash = envelope.content_hash[:12]
     operation_id = _claim_prompt_operation(
-        slug,
+        scope,
         prompt_hash,
         source_event_id=envelope.source_event_id,
     )
@@ -364,7 +370,7 @@ def _record_prompt(hook: dict, prompt: str) -> None:
         operation_id=operation_id,
     )
     if appended:
-        _complete_prompt_operation(slug, prompt_hash, operation_id)
+        _complete_prompt_operation(scope, prompt_hash, operation_id)
 
 
 def main() -> int:

@@ -404,6 +404,8 @@ PROVIDER_ENV_KEYS = (
     "MEMORY_LLM_MODEL",
     "MEMORY_LLM_BASE_URL",
     "OLLAMA_NO_CLOUD",
+    # The compile's context window belongs to the chosen model (issue #2).
+    "MEMORY_COMPILE_CONTEXT_TOKENS",
 )
 # Claude's env block owns every key the install writes into it. Owning only four
 # while `claude_settings_resource` wrote the whole provider environment made the

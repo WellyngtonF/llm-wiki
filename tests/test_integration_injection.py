@@ -31,6 +31,31 @@ import pytest
 from tests.slow_machine import SHORT_TIMEOUT
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _placement(root):
+    """A registered repository `demo/demo` at `root` (issue #14 layout)."""
+    _ensure_scripts_on_path()
+    from work_state import Placement
+
+    return Placement("demo", Path(root), "demo")
+
+
+def _register(vault, project_dir, project="demo"):
+    """List the repository in the vault's project map, as the owner does by hand."""
+    projects = Path(vault) / "knowledge/projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    (projects / "project-map.md").write_text(
+        f"## {project}\n\n- {Path(project_dir).as_posix()}\n", encoding="utf-8"
+    )
+    return projects / project / Path(project_dir).name
+
+
+def _use_store(monkeypatch, adapter, store_type, key="demo"):
+    """Work state written through `store_type`, under the journal key `demo`."""
+    monkeypatch.setattr(
+        adapter, "work_state_store", lambda *args, **kwargs: (store_type(*args[:2]), key)
+    )
 # Session start must answer from the projection instead of recomputing the
 # handoff or waiting for the Markdown writer gate. A four-core hosted Windows
 # runner needed seven seconds for that projected read, so a sub-second ceiling
@@ -288,7 +313,7 @@ def test_user_prompt_ingestion_runs_prompt_and_feedback_capture_once(monkeypatch
     monkeypatch.setattr(
         integration_adapter,
         "_project_context",
-        lambda event: ("demo", Path("D:/project")),
+        lambda event: (_placement(Path("D:/project")), Path("D:/project")),
     )
     monkeypatch.setattr(
         integration_adapter,
@@ -490,6 +515,15 @@ def test_adapter_observes_same_envelope_once_before_durable_capture(monkeypatch,
     assert calls[1][1] is calls[0][1]
 
 
+# These lifecycle events test the queue, retry and dedupe machinery, so each states
+# a change: a checkpoint whose delta is empty is not appended at all.
+_STATED_CHANGE = {
+    "project_delta": {
+        "current_task": {"id": "task-1", "action": "upsert", "value": "Ship login"}
+    }
+}
+
+
 @pytest.mark.parametrize(
     ("event_type", "raw", "reason"),
     [
@@ -519,9 +553,9 @@ def test_repeated_unidentified_lifecycle_occurrences_checkpoint_separately(
             checkpoints.append(event)
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
-    event_raw = {"session_id": "s1", "cwd": "C:/project", **raw}
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
+    event_raw = {"session_id": "s1", "cwd": "C:/project", **raw, **_STATED_CHANGE}
 
     first = integration_adapter.normalize_occurrence_event("claude", event_type, event_raw)
     second = integration_adapter.normalize_occurrence_event("claude", event_type, event_raw)
@@ -569,12 +603,12 @@ def test_same_normalized_occurrence_is_checkpointed_once(monkeypatch):
             checkpoints.append(event)
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
     envelope = integration_adapter.normalize_occurrence_event(
         "claude",
         "pre_compact",
-        {"session_id": "s1", "cwd": "C:/project", "reason": "auto"},
+        {"session_id": "s1", "cwd": "C:/project", "reason": "auto", **_STATED_CHANGE},
     )
 
     integration_adapter._observe_project_checkpoint(envelope)
@@ -677,7 +711,7 @@ def test_adapter_observes_before_direct_ingestion(monkeypatch):
         "_record_activity",
         lambda *args: calls.append(("ingest", args[0].event_id)) or True,
     )
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
 
     integration_adapter.ingest_event(envelope)
     assert calls == [("observe", envelope.event_id), ("ingest", envelope.event_id)]
@@ -708,7 +742,7 @@ def test_direct_ingestion_continues_when_checkpoint_observation_fails(monkeypatc
         "_record_activity",
         lambda *args: calls.append("ingested") or True,
     )
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
 
     result = integration_adapter.ingest_event(envelope)
     assert calls == ["logged", "ingested"]
@@ -778,12 +812,12 @@ def test_failed_checkpoint_does_not_persist_event_dedupe_and_retry_succeeds(monk
     envelope = integration_adapter.normalize_event(
         "codex",
         "session_end",
-        {"session_id": "s1", "cwd": "C:/project", "event_id": "end-1"},
+        {"session_id": "s1", "cwd": "C:/project", "event_id": "end-1", **_STATED_CHANGE},
         occurred_at=integration_adapter.datetime.fromisoformat("2026-07-13T12:00:00+00:00"),
     )
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
 
     with pytest.raises(RuntimeError, match="temporary checkpoint failure"):
         integration_adapter._observe_project_checkpoint(envelope)
@@ -804,6 +838,7 @@ def _session_end_events(adapter, project_dir: Path, count: int) -> list:
                 "session_id": "session-1",
                 "cwd": str(project_dir),
                 "event_id": f"event-{index}",
+                **_STATED_CHANGE,
             },
         )
         for index in range(count)
@@ -818,13 +853,13 @@ def _journal_records(journal: str, header: str) -> list[dict]:
 def test_concurrent_distinct_events_are_each_journaled_exactly_once(monkeypatch, tmp_path):
     _ensure_scripts_on_path()
     import integration_adapter
-    from project_journal import JOURNAL_HEADER, ProjectStore
+    from project_journal import JOURNAL_HEADER
 
     vault = tmp_path / "vault"
     state_root = tmp_path / "state"
     project_dir = tmp_path / "project"
-    (vault / "knowledge/projects/demo").mkdir(parents=True)
     project_dir.mkdir()
+    folder = _register(vault, project_dir)
     runtime_state = {}
     state_lock = threading.Lock()
 
@@ -836,15 +871,12 @@ def test_concurrent_distinct_events_are_each_journaled_exactly_once(monkeypatch,
     monkeypatch.setattr(integration_adapter, "ROOT", vault)
     monkeypatch.setattr(integration_adapter, "STATE_ROOT", state_root)
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda event: ("demo", project_dir)
-    )
     events = _session_end_events(integration_adapter, project_dir, 2)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(integration_adapter._observe_project_checkpoint, events))
 
-    journal = ProjectStore(vault, state_root).read_journal("demo")
+    journal = (folder / "journal.md").read_text(encoding="utf-8")
     records = _journal_records(journal, JOURNAL_HEADER)
     assert sorted(record["occurrence_id"] for record in records) == sorted(
         integration_adapter._batch_occurrence_id([event.event_id]) for event in events
@@ -875,13 +907,15 @@ def test_project_lease_busy_event_remains_pending_until_next_observation(monkeyp
                 raise ProjectLeaseBusy("busy")
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
     first = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "one", **_STATED_CHANGE},
     )
     second = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "two"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "two", **_STATED_CHANGE},
     )
 
     with pytest.raises(ProjectLeaseBusy):
@@ -926,10 +960,11 @@ def test_reducer_commit_failure_releases_pending_claim_for_retry(monkeypatch):
             checkpoints.append(event["occurrence_id"])
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
     event = integration_adapter.normalize_event(
-        "codex", "session_end", {"session_id": "s1", "cwd": "C:/p", "event_id": "one"}
+        "codex", "session_end",
+        {"session_id": "s1", "cwd": "C:/p", "event_id": "one", **_STATED_CHANGE},
     )
 
     with pytest.raises(TimeoutError, match="commit state busy"):
@@ -979,8 +1014,8 @@ def test_session_start_maintenance_does_not_debounce_or_drop_following_delta(mon
             checkpoints.append(event)
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
     start = integration_adapter.normalize_event(
         "claude",
         "session_start",
@@ -1063,8 +1098,8 @@ def test_debounced_deltas_flush_in_order_on_later_observation_exactly_once(monke
         )
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda envelope: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda envelope: (_placement(ROOT), ROOT))
     correction = event(
         "correction-1",
         1,
@@ -1171,8 +1206,8 @@ def test_bypass_event_immediately_flushes_debounced_delta_once_after_restart(mon
         )
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda envelope: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda envelope: (_placement(ROOT), ROOT))
     correction = make_event(
         "correction-1",
         1,
@@ -1310,7 +1345,7 @@ def test_bypass_flush_batches_205_pending_events_across_failure_and_restart(monk
             checkpoints.append(event)
 
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
+    _use_store(monkeypatch, integration_adapter, Store)
     event_ids = _seed_pending_checkpoints(integration_adapter, state, started, 205)
 
     with pytest.raises(RuntimeError, match="second batch interrupted"):
@@ -1384,8 +1419,8 @@ def test_single_oversized_valid_delta_splits_before_enqueue(monkeypatch):
         },
     )
     monkeypatch.setattr(integration_adapter, "update_state", update)
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
-    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: ("demo", ROOT))
+    _use_store(monkeypatch, integration_adapter, Store)
+    monkeypatch.setattr(integration_adapter, "_project_context", lambda event: (_placement(ROOT), ROOT))
 
     integration_adapter._observe_project_checkpoint(envelope)
 
@@ -1405,9 +1440,10 @@ def test_session_start_recovers_transactions_then_project_before_handoff(
 
     vault = tmp_path / "vault"
     project = tmp_path / "project"
-    (vault / "knowledge/projects/demo").mkdir(parents=True)
-    (vault / "knowledge/projects/demo/journal.md").write_text("journal", encoding="utf-8")
     project.mkdir()
+    folder = _register(vault, project)
+    folder.mkdir(parents=True)
+    (folder / "journal.md").write_text("journal", encoding="utf-8")
     calls = []
 
     class Coordinator:
@@ -1429,8 +1465,11 @@ def test_session_start_recovers_transactions_then_project_before_handoff(
     monkeypatch.setenv("LLM_WIKI_ROOT", str(vault))
     monkeypatch.setenv("LLM_WIKI_STATE_ROOT", str(tmp_path / "state"))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
-    monkeypatch.setattr(session_start_project_state, "_compute_slug", lambda *args: "demo")
-    monkeypatch.setattr(session_start_project_state, "ProjectStore", Store, raising=False)
+    import work_state
+
+    monkeypatch.setattr(
+        work_state, "work_state_store", lambda vault_root, state, placement: (Store(vault_root, state), "demo")
+    )
     monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
 
     assert session_start_project_state.main() == 0
@@ -1456,7 +1495,7 @@ def test_session_start_recovers_interrupted_first_checkpoint_before_journal_exis
     vault = tmp_path / "vault"
     project = tmp_path / "project"
     project.mkdir()
-    project_state = vault / "knowledge/projects/demo"
+    project_state = _register(vault, project)
     project_state.mkdir(parents=True)
     calls = []
 
@@ -1480,8 +1519,11 @@ def test_session_start_recovers_interrupted_first_checkpoint_before_journal_exis
     monkeypatch.setenv("LLM_WIKI_ROOT", str(vault))
     monkeypatch.setenv("LLM_WIKI_STATE_ROOT", str(tmp_path / "state"))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
-    monkeypatch.setattr(session_start_project_state, "_compute_slug", lambda *args: "demo")
-    monkeypatch.setattr(session_start_project_state, "ProjectStore", Store)
+    import work_state
+
+    monkeypatch.setattr(
+        work_state, "work_state_store", lambda vault_root, state, placement: (Store(vault_root, state), "demo")
+    )
     assert (
         not (project_state / "journal.md").exists(),
         session_start_project_state.main(),
@@ -1533,7 +1575,7 @@ def test_opencode_session_start_appends_recovered_bounded_project_handoff(monkey
 
     monkeypatch.setattr(integration_adapter, "_observe_checkpoint_fail_open", lambda event: None)
     monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda event: ("demo", Path("C:/project"))
+        integration_adapter, "_project_context", lambda event: (_placement(Path("C:/project")), Path("C:/project"))
     )
     monkeypatch.setattr(integration_adapter, "_record_activity", lambda *args: True)
     monkeypatch.setattr(integration_adapter, "spawn_detached", lambda args: None)
@@ -1542,7 +1584,7 @@ def test_opencode_session_start_appends_recovered_bounded_project_handoff(monkey
         "build_session_start_context",
         lambda slug=None: "# General memory\n",
     )
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
+    _use_store(monkeypatch, integration_adapter, Store)
     envelope = integration_adapter.normalize_event(
         "opencode",
         "session_start",
@@ -1567,14 +1609,14 @@ def test_opencode_node_injects_shared_bounded_legacy_handoff_for_unicode_slug(
 
     _ensure_scripts_on_path()
     import integration_adapter
-    from project_journal import ProjectStore, recover_project_handoff
+    from project_journal import recover_project_handoff
+    from work_state import placement_of, work_state_store
 
     vault = tmp_path / "vault"
     state_root = tmp_path / "state"
     project = tmp_path / "проект"
-    slug = "проект"
     project.mkdir()
-    project_state = vault / "knowledge/projects" / slug
+    project_state = _register(vault, project, "проект")
     project_state.mkdir(parents=True)
     fixture = ROOT / "tests/fixtures/project-state-older.md"
     (project_state / "state.md").write_text(
@@ -1596,7 +1638,8 @@ def test_opencode_node_injects_shared_bounded_legacy_handoff_for_unicode_slug(
     started = time.perf_counter()
     result = integration_adapter.ingest_event(envelope)
     elapsed = time.perf_counter() - started
-    shared = recover_project_handoff(ProjectStore(vault, state_root), slug, project_root=project)
+    store, slug = work_state_store(vault, state_root, placement_of(vault, project))
+    shared = recover_project_handoff(store, slug, project_root=project)
 
     assert (
         elapsed < SESSION_START_BUDGET_SECONDS,
@@ -1675,7 +1718,7 @@ def test_opencode_session_start_project_recovery_is_fail_open(monkeypatch):
     errors = []
     monkeypatch.setattr(integration_adapter, "_observe_checkpoint_fail_open", lambda event: None)
     monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda event: ("demo", Path("C:/project"))
+        integration_adapter, "_project_context", lambda event: (_placement(Path("C:/project")), Path("C:/project"))
     )
     monkeypatch.setattr(integration_adapter, "_record_activity", lambda *args: True)
     monkeypatch.setattr(integration_adapter, "spawn_detached", lambda args: None)
@@ -1684,7 +1727,7 @@ def test_opencode_session_start_project_recovery_is_fail_open(monkeypatch):
         "build_session_start_context",
         lambda slug=None: "# General memory\n",
     )
-    monkeypatch.setattr(integration_adapter, "ProjectStore", Store)
+    _use_store(monkeypatch, integration_adapter, Store)
     monkeypatch.setattr(
         integration_adapter, "_log_checkpoint_error", lambda error: errors.append(str(error))
     )
@@ -1723,7 +1766,7 @@ def test_opencode_session_start_writer_contention_is_bounded_and_degraded(monkey
     monkeypatch.setattr(integration_adapter, "STATE_ROOT", state_root)
     monkeypatch.setattr(integration_adapter, "_observe_checkpoint_fail_open", lambda event: None)
     monkeypatch.setattr(
-        integration_adapter, "_project_context", lambda event: ("demo", project_dir)
+        integration_adapter, "_project_context", lambda event: (_placement(project_dir), project_dir)
     )
     monkeypatch.setattr(integration_adapter, "_record_activity", lambda *args: True)
     monkeypatch.setattr(integration_adapter, "spawn_detached", lambda args: None)
@@ -1763,16 +1806,16 @@ def test_claude_and_codex_project_state_are_bounded_under_writer_contention(host
 
     _ensure_scripts_on_path()
     import integration_adapter
-    from project_journal import ProjectStore
+    from work_state import placement_of, work_state_store
 
     vault = tmp_path / "vault"
     state_root = tmp_path / "state"
     project_dir = tmp_path / "demo"
-    (vault / "knowledge/projects/demo").mkdir(parents=True)
     project_dir.mkdir()
-    store = ProjectStore(vault, state_root)
+    _register(vault, project_dir)
+    store, key = work_state_store(vault, state_root, placement_of(vault, project_dir))
     store.checkpoint(
-        "demo",
+        key,
         {
             "schema_version": "project-checkpoint/v1",
             "occurrence_id": "committed-context",
@@ -1829,10 +1872,10 @@ def test_claude_and_codex_project_state_are_bounded_under_writer_contention(host
     context = _project_state_context(host, json.loads(result.stdout))
     unmet = _unmet_substrings(
         (
-            ("project:demo", context, True),
+            (f"project:{key}", context, True),
             ("sequence:1", context, True),
             ("Degraded", context, True),
-            ("recovery:project:demo", context, True),
+            (f"recovery:project:{key}", context, True),
         )
     )
     assert (len(context) <= 2400, unmet) == (True, [])

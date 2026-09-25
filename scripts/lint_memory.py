@@ -8,7 +8,7 @@ The checks (`CHECK_NAMES` is the full list; Phase 2 expanded the original seven 
  2. orphan_pages — knowledge/wiki pages not referenced by the relevant index.md.
  3. orphan_daily_logs — daily logs with no compile recorded in state.json.
  4. stale_compiled — daily log hash changed after last compile.
- 5. missing_backlinks — page A links to page B, but B does not link back.
+ 5. (retired) missing_backlinks — Obsidian derives backlinks (ADR 0003).
  6. sparse_pages — pages under a word-count floor (default 200 words).
  7. contradictions — LLM-judged conflicts between pages (opt-in, --contradictions).
  8. missing_frontmatter — page has no YAML `---` block (OKF violation).
@@ -32,6 +32,7 @@ Writes a report to `$LLM_WIKI_STATE_ROOT/logs/lint-YYYY-MM-DD.md`
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import re
 import subprocess
@@ -77,7 +78,6 @@ from okf_types import (
 from page_status import is_retired  # noqa: E402
 from reliable_memory import canonical_json_bytes, validate_schema  # noqa: E402
 from vault_editorial import (  # noqa: E402
-    BACKLINK_EXEMPT_NAMES,
     BROKEN_LINK_SKIP_NAMES,
     EDITORIAL_NAMES,
 )
@@ -98,9 +98,8 @@ DEFAULT_SPARSE_WORDS = 200
 # `docs/research/2026-09-10-one-ceiling-for-every-reader-of-a-journal.md`.
 MAX_LINT_PAGE_BYTES = MAX_CLAIM_TREE_FILE_BYTES
 
-# Editorial page sets (EDITORIAL_NAMES, BACKLINK_EXEMPT_NAMES,
-# BROKEN_LINK_SKIP_NAMES) come from `vault_editorial` — shared with
-# `lookup_mode.py` so the two stay in sync.
+# Editorial page sets (EDITORIAL_NAMES, BROKEN_LINK_SKIP_NAMES) come from
+# `vault_editorial` — shared with `lookup_mode.py` so the two stay in sync.
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,7 +117,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Exit non-zero (1) when any structural finding is detected, "
             "instead of the default always-zero exit. Intended for CI: "
-            "new broken wikilinks / orphan pages / missing backlinks / "
+            "new broken wikilinks / orphan pages / "
             "sparse pages / contradictions fail the build. "
             "`orphan_daily_logs` is exempt (self-resolves on next compile)."
         ),
@@ -166,28 +165,42 @@ def _extract_links(md: Path) -> list[str]:
     return [m.group(1) for m in WIKILINK_RE.finditer(text)]
 
 
+def _inside_vault(candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(VAULT.resolve())
+    except ValueError:
+        return False
+    return candidate.is_file()
+
+
 def _resolve_path_style_link(target: str) -> Path | None:
-    """A target with a slash is anchored at the vault root, with or without .md."""
-    for candidate in ((ROOT / (target + ".md")).resolve(), (ROOT / target).resolve()):
-        if candidate.is_file():
-            return candidate
+    """A target with a slash is a path from the vault root, with or without .md."""
+    for candidate in (VAULT / f"{target}.md", VAULT / target):
+        if _inside_vault(candidate):
+            return candidate.resolve()
     return None
 
 
-def _resolve_bare_link(target: str, search_roots: list[Path]) -> Path | None:
-    for root in search_roots:
-        for page in root.rglob(f"{target}.md"):
-            return page
-    return None
+def _resolve_bare_link(target: str) -> Path | None:
+    """A bare target names a file anywhere in the vault; the shallowest one wins."""
+    found: list[Path] = []
+    for name in (f"{target}.md", target):
+        found.extend(path for path in VAULT.rglob(glob.escape(name)) if path.is_file())
+        if found:
+            break
+    if not found:
+        return None
+    return min(found, key=lambda path: (len(path.parts), path.as_posix()))
 
 
-def _resolve_link(target: str, search_roots: list[Path]) -> Path | None:
+def resolve_link(target: str) -> Path | None:
+    """Where Obsidian, with the vault rooted at `knowledge/`, opens this link."""
     stripped = target.strip()
     if not stripped:
         return None
     if "/" in stripped:
         return _resolve_path_style_link(stripped)
-    return _resolve_bare_link(stripped, search_roots)
+    return _resolve_bare_link(stripped)
 
 
 def check_evidence_references(pages: list[Path]) -> list[str]:
@@ -261,7 +274,7 @@ def _scannable_page(md: Path, tracked: set[str] | None) -> bool:
     return relative is not None and relative in tracked
 
 
-def _is_placeholder_target(target: str) -> bool:
+def is_placeholder_target(target: str) -> bool:
     """Templates and prose examples are not links to resolve."""
     stripped = target.strip()
     if stripped in ("...", "wikilinks"):
@@ -281,12 +294,10 @@ def _tracked_target_finding(
     return None
 
 
-def _link_finding(
-    md: Path, target: str, search_roots: list[Path], tracked: set[str] | None
-) -> str | None:
-    if _is_placeholder_target(target):
+def _link_finding(md: Path, target: str, tracked: set[str] | None) -> str | None:
+    if is_placeholder_target(target):
         return None
-    resolved = _resolve_link(target, search_roots)
+    resolved = resolve_link(target)
     if resolved is None:
         return f"{_rel(md)} -> [[{target}]]"
     return _tracked_link_finding(md, target, resolved, tracked)
@@ -299,23 +310,21 @@ def _tracked_link_finding(md: Path, target: str, resolved: Path, tracked: set[st
     return _tracked_target_finding(md, target, resolved, tracked)
 
 
-def _page_link_findings(
-    md: Path, search_roots: list[Path], tracked: set[str] | None
-) -> list[str]:
+def _page_link_findings(md: Path, tracked: set[str] | None) -> list[str]:
     out: list[str] = []
     for target in _extract_links(md):
-        finding = _link_finding(md, target, search_roots, tracked)
+        finding = _link_finding(md, target, tracked)
         if finding is not None:
             out.append(finding)
     return out
 
 
-def check_broken_links(pages: list[Path], search_roots: list[Path]) -> list[str]:
+def check_broken_links(pages: list[Path]) -> list[str]:
     tracked = _git_tracked_paths()
     out: list[str] = []
     for md in pages:
         if _scannable_page(md, tracked):
-            out.extend(_page_link_findings(md, search_roots, tracked))
+            out.extend(_page_link_findings(md, tracked))
     return out
 
 
@@ -393,80 +402,6 @@ def check_stale_compiled(state: dict) -> list[str]:
         if recorded and recorded != file_hash(path):
             out.append(_rel(path))
     return out
-
-
-def _is_backlink_exempt(md: Path) -> bool:
-    return md.name in EDITORIAL_NAMES or md.name in BACKLINK_EXEMPT_NAMES
-
-
-def _resolved_page_links(
-    md: Path, page_set: set[Path], search_roots: list[Path]
-) -> list[Path]:
-    """Links from one page that land on another page in the same set."""
-    resolved: list[Path] = []
-    for target in _extract_links(md):
-        landed = _resolve_link(target, search_roots)
-        if landed is not None and landed in page_set:
-            resolved.append(landed)
-    return resolved
-
-
-def _owed_pairs_from(source: Path, targets: list[Path]) -> list[tuple[Path, Path]]:
-    return [(source, target) for target in targets if _pair_owes_backlink(source, target)]
-
-
-def _backlink_pairs(link_map: dict[Path, list[Path]]) -> list[tuple[Path, Path]]:
-    """Every ordered pair that owes a backlink, each pair once."""
-    owed: list[tuple[Path, Path]] = []
-    for source, targets in link_map.items():
-        owed.extend(_owed_pairs_from(source, targets))
-    return list(dict.fromkeys(owed))
-
-
-def _pair_owes_backlink(source: Path, target: Path) -> bool:
-    if source == target or _is_backlink_exempt(source):
-        return False
-    if _is_retired(target):
-        # A superseded or archived page is history. Making it link forward to
-        # every later page that mentions it would rewrite that history, which
-        # the vault forbids for decisions — and the repair pass would have to
-        # edit an immutable page to clear a finding nobody wants cleared.
-        return False
-    return not _is_backlink_exempt(target)
-
-
-def missing_backlink_pairs(
-    pages: list[Path], search_roots: list[Path]
-) -> list[tuple[Path, Path]]:
-    """Every (source, target) where the target still owes a link back."""
-    page_set = set(pages)
-    link_map = {md: _resolved_page_links(md, page_set, search_roots) for md in pages}
-    return [
-        (source, target)
-        for source, target in _backlink_pairs(link_map)
-        if source not in link_map.get(target, [])
-        and _backlink_is_publishable(source, target)
-    ]
-
-
-def check_missing_backlinks(pages: list[Path], search_roots: list[Path]) -> list[str]:
-    """Within a set of pages, A->B must be matched by B->A."""
-    return [
-        f"{_rel(source)} -> {_rel(target)} (no backlink)"
-        for source, target in missing_backlink_pairs(pages, search_roots)
-    ]
-
-
-def _backlink_is_publishable(source: Path, target: Path) -> bool:
-    """The obligation sits on the target, so the target must be able to carry it.
-
-    A published page naming a private one would put a private slug into a
-    tracked file, which is the leak the whole publication boundary exists to
-    prevent. The reverse direction is already reported as a broken link.
-    """
-    if _is_published(source):
-        return True
-    return not _is_published(target)
 
 
 def check_sparse_pages(pages: list[Path], min_words: int) -> list[str]:
@@ -777,7 +712,7 @@ def check_invalid_supersede_chain(pages: list[Path]) -> list[str]:
     out: list[str] = []
     for md in pages:
         target = _supersede_target(md)
-        if target and _resolve_link(target, [VAULT, NOTES]) is None:
+        if target and resolve_link(target) is None:
             out.append(f"{_rel(md)} -> superseded_by [[{target}]] (target not found)")
     return out
 
@@ -1066,7 +1001,6 @@ CHECK_NAMES = (
     "orphan_pages",
     "orphan_daily_logs",
     "stale_compiled",
-    "missing_backlinks",
     "sparse_pages",
     # Phase 2 OKF conformance checks.
     "missing_frontmatter",
@@ -1126,11 +1060,9 @@ def _page_checks(
 ) -> dict[str, list[str]]:
     """Every per-page check for one scope, already labelled."""
     tree = _unique_by_resolved_path(list(_iter_tree_md(NOTES)))
-    search_roots = [VAULT, NOTES]
     results = {
-        "broken_wikilinks": check_broken_links(tree, search_roots),
+        "broken_wikilinks": check_broken_links(tree),
         "orphan_pages": check_orphans_against_index(pages, index),
-        "missing_backlinks": check_missing_backlinks(pages, search_roots),
         "sparse_pages": check_sparse_pages(pages, sparse_words),
         "missing_frontmatter": check_missing_frontmatter(pages),
         "unreadable_frontmatter": check_unreadable_frontmatter(pages),
@@ -1147,7 +1079,7 @@ def _page_checks(
 
 
 def _frontmatter_only_findings(findings: dict[str, list[str]]) -> None:
-    """Skills and rules carry OKF frontmatter but no wikilinks or backlinks."""
+    """Skills and rules carry OKF frontmatter but no wikilinks."""
     for label, root in (("skills", ROOT / "skills"), ("rules", ROOT / "rules")):
         pages = _iter_tree_md(root)
         findings["missing_frontmatter"] += _labelled(

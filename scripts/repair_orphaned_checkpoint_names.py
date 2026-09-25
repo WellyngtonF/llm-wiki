@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from memory_state import ROOT, STATE_ROOT  # noqa: E402
 from project_journal import ProjectLeaseBusy, ProjectStore, _timestamp  # noqa: E402
+from work_state import operator_store  # noqa: E402
 
 # Every checkpoint written since the rename is named by `_batch_occurrence_id`.
 # Anything else on an unsettled row predates it and can never be re-requested.
@@ -167,7 +168,7 @@ def main() -> int:
         help="name the orphaned rows and change nothing",
     )
     args = parser.parse_args()
-    store = ProjectStore(Path(args.vault), Path(args.state_root))
+    store = operator_store(Path(args.vault), Path(args.state_root))
     if args.list_only:
         rows = orphaned_rows(store)
         print("\n".join(f"{p} {s} ({st}, {o[:16]}…)" for p, s, st, o in rows) or "none")

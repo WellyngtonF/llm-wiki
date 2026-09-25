@@ -33,11 +33,11 @@ from project_journal import (
     SESSION_START_RECOVERY_SECONDS,
     CheckpointDecision,
     CheckpointReducer,
-    ProjectStore,
     recover_project_handoff,
 )
 from secret_redact import redact_secrets
-from session_start_project_state import _compute_slug
+from session_start_project_state import working_repository
+from work_state import Placement, placement_of, work_state_store
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DELEGATE_TIMEOUT_SECONDS = 10
@@ -196,8 +196,7 @@ _PATCHED_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULT
 
 def _tool_payload(source: str, raw: Mapping[str, Any]) -> dict[str, str]:
     raw_name = _first_string(raw.get("tool_name"), raw.get("tool")) or ""
-    tool_input = raw.get("tool_input") if source != "opencode" else raw.get("input")
-    tool_input = tool_input if isinstance(tool_input, Mapping) else {}
+    tool_input = _tool_input(source, raw)
     target = (
         _first_string(
             tool_input.get("filePath"),
@@ -211,6 +210,12 @@ def _tool_payload(source: str, raw: Mapping[str, Any]) -> dict[str, str]:
         "tool_name": _TOOL_NAMES.get(raw_name.lower(), raw_name),
         "target": _tool_target(raw_name, target),
     }
+
+
+def _tool_input(source: str, raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """OpenCode's `tool.execute.after` input names the arguments `args`."""
+    names = ("tool_input",) if source != "opencode" else ("input", "args")
+    return next((raw[name] for name in names if isinstance(raw.get(name), Mapping)), {})
 
 
 def _tool_target(raw_name: str, target: str) -> str:
@@ -676,12 +681,80 @@ def _empty_delta() -> dict[str, object]:
     }
 
 
+_MAX_REPOSITORY_DEPTH = 64
+_MAX_GIT_FILE_BYTES = 4096
+_MAX_BRANCH_CHARS = 256
+_DETACHED_HEAD = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def _read_git_file(path: Path) -> str | None:
+    try:
+        with path.open("rb") as stream:
+            return stream.read(_MAX_GIT_FILE_BYTES).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+
+
+def _git_directory(dot_git: Path) -> Path | None:
+    """`.git` itself, or the directory a worktree's `.git` pointer file names."""
+    if dot_git.is_dir():
+        return dot_git
+    text = _read_git_file(dot_git) or ""
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text[len("gitdir:") :].strip())
+    return gitdir if gitdir.is_absolute() else dot_git.parent / gitdir
+
+
+def _branch_from_head(head: str) -> str | None:
+    if head.startswith("ref:"):
+        ref = head[len("ref:") :].strip()
+        return ref.removeprefix("refs/heads/") or None
+    if _DETACHED_HEAD.fullmatch(head):
+        return f"detached at {head[:12]}"
+    return None
+
+
+def _repository_branch(worktree: str | None) -> str | None:
+    """The branch checked out where the event happened, read from the repository.
+
+    No host hook passes a branch, so all 1 976 journal events on the owner's vault
+    named it `unknown`. A worktree's `HEAD` lives in the git directory its pointer
+    file names, which is the worktree's own branch and not the main checkout's.
+    """
+    if not worktree:
+        return None
+    try:
+        start = Path(worktree).resolve()
+        for directory in (start, *start.parents)[:_MAX_REPOSITORY_DEPTH]:
+            dot_git = directory / ".git"
+            if dot_git.exists():
+                gitdir = _git_directory(dot_git)
+                head = _read_git_file(gitdir / "HEAD") if gitdir is not None else None
+                return _branch_from_head(head) if head else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _checkpoint_branch(envelope: EventEnvelope) -> str | None:
+    stated = _string(envelope.payload.get("branch"))
+    branch = stated or _repository_branch(envelope.worktree)
+    return _safe_string(branch[:_MAX_BRANCH_CHARS]) if branch else None
+
+
 def _checkpoint_event(
     envelope: EventEnvelope,
     slug: str,
     reason: str,
+    *,
+    repository: Path | None = None,
 ) -> dict[str, object]:
     delta = _checkpoint_delta(envelope)
+    # The journal reads this field as the project root, and slug ownership is
+    # checked against it, so it names the repository's main checkout rather than
+    # the subfolder or worktree the agent happened to be in (ADR 0002).
+    root = str(repository) if repository is not None else envelope.worktree
     return {
         "schema_version": "project-checkpoint/v1",
         "occurrence_id": envelope.event_id,
@@ -689,8 +762,8 @@ def _checkpoint_event(
         "provenance": {
             "agent": _known(envelope.agent),
             "session": _known(envelope.session),
-            "worktree": _known(envelope.worktree),
-            "branch": _known(_string(envelope.payload.get("branch"))),
+            "worktree": _known(root),
+            "branch": _known(_checkpoint_branch(envelope)),
             "source_event": _known(envelope.source_event_id, envelope.event_id),
         },
         "trigger": str(_checkpoint_observation(envelope)["type"]),
@@ -773,11 +846,22 @@ def _derived_command(payload: Mapping[str, Any], at: object) -> list[dict[str, s
     return [_upsert(f"cmd:{target[:120]}", target, at)]
 
 
+def _reports_failure(envelope: EventEnvelope, payload: Mapping[str, Any]) -> bool:
+    """A severity, or the failure signal a host's failure hook sends.
+
+    No hook sets a severity: Claude's `PostToolUseFailure` passes
+    `--checkpoint-type significant_failure` and the OpenCode plugin forwards a
+    non-zero exit the same way, so reading the severity alone turned 46 failure
+    events on the owner's vault into 0 blockers.
+    """
+    return envelope.severity in {"error", "fatal"} or payload.get("significant_failure") is True
+
+
 def _derived_blocker(
     envelope: EventEnvelope, payload: Mapping[str, Any], at: object
 ) -> list[dict[str, str]]:
     """A failure the run actually hit, keyed by what failed rather than by when."""
-    if envelope.severity not in {"error", "fatal"}:
+    if not _reports_failure(envelope, payload):
         return []
     tool, target = _derived_target(payload)
     if not tool:
@@ -812,13 +896,15 @@ def _checkpoint_delta(envelope: EventEnvelope) -> dict[str, object]:
     return _derived_delta(envelope)
 
 
-def _pending_checkpoint(envelope: EventEnvelope, slug: str, state_key: str) -> dict[str, object]:
+def _pending_checkpoint(
+    envelope: EventEnvelope, slug: str, state_key: str, *, repository: Path | None = None
+) -> dict[str, object]:
     return {
         "event_id": envelope.event_id,
         "state_key": state_key,
         "occurred_at": envelope.occurred_at.isoformat(),
         "observation": _checkpoint_observation(envelope),
-        "checkpoint_event": _checkpoint_event(envelope, slug, "pending"),
+        "checkpoint_event": _checkpoint_event(envelope, slug, "pending", repository=repository),
         "has_project_delta": isinstance(envelope.payload.get("project_delta"), Mapping),
     }
 
@@ -882,9 +968,9 @@ def _split_project_delta(delta: Mapping[str, object]) -> list[dict[str, object]]
 
 
 def _pending_checkpoints(
-    envelope: EventEnvelope, slug: str, state_key: str
+    envelope: EventEnvelope, slug: str, state_key: str, *, repository: Path | None = None
 ) -> list[dict[str, object]]:
-    pending = _pending_checkpoint(envelope, slug, state_key)
+    pending = _pending_checkpoint(envelope, slug, state_key, repository=repository)
     delta = envelope.to_dict()["payload"].get("project_delta")
     if not isinstance(delta, Mapping):
         return [pending]
@@ -1426,7 +1512,7 @@ def _write_project_checkpoint(
     checkpoint = _merge_pending_checkpoints(selected, decision)
     event_id = str(selected[-1]["event_id"])
     args = (slug, checkpoint, f"lifecycle:{event_id[:16]}")
-    store = ProjectStore(ROOT, STATE_ROOT)
+    store, _key = work_state_store(ROOT, STATE_ROOT)
     if writer_wait_seconds is None:
         store.checkpoint(*args)
         return
@@ -1639,6 +1725,26 @@ def _record_inflight_or_release(
         raise
 
 
+def _without_empty_checkpoint(
+    selected: list[dict[str, object]],
+    reducers: dict[str, CheckpointReducer],
+    decisions: list[CheckpointDecision | None],
+    decision: CheckpointDecision | None,
+):
+    """A batch that changes nothing is drained without a journal entry.
+
+    `session_end` bypasses the reducer's throttle whatever it carries, so every
+    Codex turn that did nothing appended a checkpoint of `checkpoint-none` closes.
+    The batch's events still leave the queue and stay observed, so a replay of one
+    of them appends nothing later, and no journal sequence is spent on it. A stated
+    close is content, so it is never skipped.
+    """
+    if decision is None or _any_pending_delta(selected):
+        return selected, reducers, decisions, decision
+    kept = [item if item is not None and item.maintenance else None for item in decisions]
+    return selected, reducers, kept, None
+
+
 def _drain_project_checkpoint_once(
     slug: str,
     queue_key: str,
@@ -1653,7 +1759,7 @@ def _drain_project_checkpoint_once(
     if plan is None:
         _release_pending_claims(queue_key, owner, state_lock_seconds)
         return False
-    selected, reducers, decisions, decision = plan
+    selected, reducers, decisions, decision = _without_empty_checkpoint(*plan)
     _record_inflight_or_release(queue_key, owner, selected, decision, state_lock_seconds)
     committed = _persist_or_release(
         slug,
@@ -1752,13 +1858,19 @@ def _observe_project_checkpoint(
     *,
     writer_wait_seconds: float | None = None,
 ) -> None:
-    """Durably enqueue one envelope and drain its project's ordered queue."""
-    slug, project_dir = _project_context(envelope)
-    if not slug or project_dir is None:
+    """Durably enqueue one envelope and drain its repository's ordered queue.
+
+    Only a registered repository has a journal; any other directory enqueues
+    nothing and writes nothing (ADR 0002).
+    """
+    placement, _repository = _project_context(envelope)
+    if placement is None:
         return
+    _store, slug = work_state_store(ROOT, STATE_ROOT, placement)
+    project_dir = placement.repository
     session_key = envelope.session or "unknown"
     state_key = f"{slug}:{session_key}"
-    pending_events = _pending_checkpoints(envelope, slug, state_key)
+    pending_events = _pending_checkpoints(envelope, slug, state_key, repository=project_dir)
 
     def enqueue(state: dict[str, Any]) -> None:
         _enqueue_pending_events(state, state_key, slug, pending_events)
@@ -1911,15 +2023,33 @@ def _observe_checkpoint_fail_open(envelope: EventEnvelope) -> None:
         _log_checkpoint_error(exc)
 
 
-def _project_context(envelope: EventEnvelope) -> tuple[str | None, Path | None]:
-    if not envelope.worktree:
+def _project_context(envelope: EventEnvelope) -> tuple[Placement | None, Path | None]:
+    """(registered placement, repository root) of the directory the event came from.
+
+    The repository is the main checkout of any directory that could be a project,
+    registered or not; the placement is there only when the project map lists it.
+    """
+    directory = _observed_directory(envelope)
+    if directory is None:
         return None, None
+    projects = ROOT / "knowledge" / "projects"
     try:
-        project_dir = Path(envelope.worktree).resolve()
-        slug = _compute_slug(project_dir, ROOT / "knowledge" / "projects")
+        repository = working_repository(directory, projects)
     except (OSError, ValueError):
         return None, None
-    return slug, project_dir
+    try:
+        return placement_of(ROOT, repository), repository
+    except (OSError, ValueError):
+        return None, repository
+
+
+def _observed_directory(envelope: EventEnvelope) -> Path | None:
+    if not envelope.worktree:
+        return None
+    try:
+        return Path(envelope.worktree).resolve()
+    except (OSError, ValueError):
+        return None
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -2282,16 +2412,16 @@ def _restrict_file_permissions(path: Path) -> None:
 
 def _record_activity(
     envelope: EventEnvelope,
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
 ) -> bool:
-    if not slug or project_dir is None:
+    if placement is None or project_dir is None:
         return False
     heartbeat = _run_delegate(
         "heartbeat_record.py",
         {
-            "slug": slug,
-            "projectRoot": str(project_dir),
+            "slug": placement.project,
+            "projectRoot": str(placement.repository),
             "reason": envelope.payload.get("reason") or envelope.event_type,
             "sessionId": envelope.session,
         },
@@ -2363,15 +2493,15 @@ def _catch_up_missed_nightly() -> None:
         pass
 
 
-def _recover_project_handoff(slug: str | None, project_dir: Path | None) -> Sequence[Any]:
-    if not slug or project_dir is None:
+def _recover_project_handoff(placement: Placement | None) -> Sequence[Any]:
+    if placement is None:
         return ()
     try:
-        store = ProjectStore(ROOT, STATE_ROOT)
+        store, key = work_state_store(ROOT, STATE_ROOT, placement)
         return recover_project_handoff(
             store,
-            slug,
-            project_root=project_dir,
+            key,
+            project_root=placement.repository,
             render_context=False,
         ).items
     except Exception as exc:  # noqa: BLE001
@@ -2501,9 +2631,9 @@ def _append_context(
     return _compile_context(items, trailing_newline=trailing_newline)
 
 
-def _ingest_result(slug: str | None, payload: Mapping[str, Any]) -> dict[str, Any]:
+def _ingest_result(placement: Placement | None, payload: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "slug": slug,
+        "slug": placement.relative if placement is not None else None,
         "heartbeat_recorded": False,
         "daily_log_written": False,
         "flush_spawned": False,
@@ -2529,22 +2659,22 @@ def _write_session_start_debug(context: object) -> None:
 def _ingest_session_start(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
     trigger: str | None,
 ) -> None:
-    result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+    result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
     maintenance_pid = spawn_detached(
         [sys.executable, str(SCRIPTS_DIR / "integration_adapter.py"), "--maintenance"]
     )
     result["maintenance_scheduled"] = maintenance_pid is not None
     result["context"] = _append_context(
-        build_session_start_context(slug),
-        _recover_project_handoff(slug, project_dir),
+        build_session_start_context(placement.project if placement else None),
+        _recover_project_handoff(placement),
         trailing_newline=True,
-        code_graph=_code_graph_reminder(project_dir),
+        code_graph=_code_graph_reminder(_observed_directory(envelope) if project_dir else None),
     )
     _write_session_start_debug(result["context"])
 
@@ -2552,7 +2682,7 @@ def _ingest_session_start(
 def _ingest_user_prompt(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -2569,7 +2699,7 @@ def _ingest_user_prompt(
         {
             "text": payload["prompt"],
             "session_id": envelope.session or "unknown",
-            "slug": slug or "unknown",
+            "slug": placement.project if placement else "unknown",
             "trigger": f"{envelope.agent or 'unknown'}-user-message",
         },
         project_dir=project_dir,
@@ -2579,7 +2709,7 @@ def _ingest_user_prompt(
 def _ingest_post_tool(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -2784,11 +2914,15 @@ def _capture_occurred_at(envelope: EventEnvelope) -> str | None:
 
 def _capture_source_record(
     envelope: EventEnvelope,
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
     text: str,
 ) -> dict[str, object]:
     evidence = [{"role": "transcript", "parts": [{"type": "text", "text": text}]}]
+    # Registered work names its project and, as the checkpoint does, the main
+    # checkout; the daily block reads both. Unregistered work names no project.
+    project = placement.project if placement is not None else None
+    worktree = str(placement.repository) if placement is not None else envelope.worktree
     return {
         "source_occurrence_id": envelope.event_id,
         "source_event_id": envelope.source_event_id or envelope.event_id,
@@ -2796,8 +2930,8 @@ def _capture_source_record(
         "host": envelope.agent or "unknown",
         "event": envelope.event_type,
         "session": _capture_nullable_text(envelope.session, "capture session"),
-        "project_slug": _capture_nullable_text(slug, "capture project slug"),
-        "worktree": _capture_nullable_text(envelope.worktree, "capture worktree"),
+        "project_slug": _capture_nullable_text(project, "capture project slug"),
+        "worktree": _capture_nullable_text(worktree, "capture worktree"),
         "trigger": _capture_nullable_text(trigger, "capture trigger"),
         "checkpoint_reason": _capture_nullable_text(
             envelope.payload.get("reason"), "capture checkpoint reason"
@@ -2846,7 +2980,7 @@ def _smaller_evidence_limit(limit: int, encoded_size: int) -> int:
 def _fitting_capture_record(
     envelope: EventEnvelope,
     payload: Mapping[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
 ) -> tuple[dict[str, object], bytes] | None:
     """The record and its bytes, with evidence cut until the encoded record fits.
@@ -2861,7 +2995,7 @@ def _fitting_capture_record(
         if text is None:
             return None
         record, encoded = _encoded_capture_record(
-            _capture_source_record(envelope, slug, trigger, text)
+            _capture_source_record(envelope, placement, trigger, text)
         )
         if len(encoded) <= MAX_CAPTURE_INTENT_BYTES:
             return record, encoded
@@ -3000,14 +3134,14 @@ def _publish_capture_files_and_task(
 def _publish_durable_capture_intent(
     envelope: EventEnvelope,
     payload: Mapping[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     trigger: str | None,
 ) -> str | None:
     from markdown_transaction import active_markdown_coordinator
     from memory_queue import active_memory_queue
     from reliable_memory import sha256_bytes
 
-    fitted = _fitting_capture_record(envelope, payload, slug, trigger)
+    fitted = _fitting_capture_record(envelope, payload, placement, trigger)
     if fitted is None:
         return None
     record, encoded = fitted
@@ -3058,9 +3192,9 @@ def _publish_intent_from_payload(
 ) -> str | None:
     envelope = normalize_event(source, event_type, dict(payload))
     canonical = _canonical_capture_payload(envelope)
-    slug, _project_dir = _project_context(envelope)
+    placement, _project_dir = _project_context(envelope)
     trigger = _fallback_trigger(event_type, canonical)
-    return _publish_durable_capture_intent(envelope, canonical, slug, trigger)
+    return _publish_durable_capture_intent(envelope, canonical, placement, trigger)
 
 
 def capture_running_session(source: str, payload: Mapping[str, Any]) -> str | None:
@@ -3126,13 +3260,13 @@ def _wake_capture_worker(result: dict[str, Any], intent_id: str | None) -> bool:
 def _capture_precompact(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     intent_id: str | None,
 ) -> bool:
     if not payload.get("transcript_path"):
-        result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+        result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
         return False
     return _wake_capture_worker(result, intent_id)
 
@@ -3140,7 +3274,7 @@ def _capture_precompact(
 def _ingest_precompact(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3150,11 +3284,11 @@ def _ingest_precompact(
     intent_id = None
     try:
         intent_id = _publish_durable_capture_intent(
-            envelope, payload, slug, _string(payload.get("trigger"))
+            envelope, payload, placement, _string(payload.get("trigger"))
         )
         _record_capture_intent(result, intent_id)
         _capture_precompact(
-            envelope, payload, slug, project_dir, result, intent_id
+            envelope, payload, placement, project_dir, result, intent_id
         )
     finally:
         _cleanup_durable_transcript(transient_path, intent_id)
@@ -3211,7 +3345,7 @@ def _tag_session_end(
 def _capture_session_end_without_transcript(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3220,8 +3354,8 @@ def _capture_session_end_without_transcript(
     if force_stub:
         _tag_session_end(payload, project_dir, result)
         return False
-    if slug and project_dir:
-        result["heartbeat_recorded"] = _record_activity(envelope, slug, project_dir)
+    if placement and project_dir:
+        result["heartbeat_recorded"] = _record_activity(envelope, placement, project_dir)
     return False
 
 
@@ -3251,7 +3385,7 @@ def _transcript_present(payload: Mapping[str, Any]) -> bool:
 def _capture_session_end(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3261,14 +3395,14 @@ def _capture_session_end(
         _tag_session_end(payload, project_dir, result)
         return _wake_capture_worker(result, intent_id)
     return _capture_session_end_without_transcript(
-        envelope, payload, slug, project_dir, result, force_stub
+        envelope, payload, placement, project_dir, result, force_stub
     )
 
 
 def _ingest_session_end(
     envelope: EventEnvelope,
     payload: dict[str, Any],
-    slug: str | None,
+    placement: Placement | None,
     project_dir: Path | None,
     result: dict[str, Any],
     force_stub: bool,
@@ -3279,11 +3413,11 @@ def _ingest_session_end(
     intent_id = None
     try:
         intent_id = _publish_durable_capture_intent(
-            envelope, payload, slug, _string(payload.get("trigger"))
+            envelope, payload, placement, _string(payload.get("trigger"))
         )
         _record_capture_intent(result, intent_id)
         _capture_session_end(
-            envelope, payload, slug, project_dir, result, force_stub, intent_id
+            envelope, payload, placement, project_dir, result, force_stub, intent_id
         )
     finally:
         _cleanup_durable_transcript(transient_path, intent_id)
@@ -3298,8 +3432,8 @@ def ingest_event(
     """Apply shared lifecycle persistence policy to a normalized envelope."""
     _observe_checkpoint_fail_open(envelope)
     payload = _canonical_capture_payload(envelope)
-    slug, project_dir = _project_context(envelope)
-    result = _ingest_result(slug, payload)
+    placement, project_dir = _project_context(envelope)
+    result = _ingest_result(placement, payload)
     handlers = {
         "session_start": _ingest_session_start,
         "user_prompt": _ingest_user_prompt,
@@ -3309,7 +3443,7 @@ def ingest_event(
     }
     handler = handlers.get(envelope.event_type)
     if handler is not None:
-        handler(envelope, payload, slug, project_dir, result, force_stub, trigger)
+        handler(envelope, payload, placement, project_dir, result, force_stub, trigger)
     return result
 
 

@@ -194,7 +194,8 @@ def test_source_identity_hashes_logical_path_and_digest(vault):
     ] == [f"v3-{first_identity}.md", f"v3-{second_identity}.md"]
 
 
-def test_complete_item_packer_rejects_oversized_daily_before_dispatch(vault):
+def test_complete_item_packer_sets_an_oversized_daily_aside_before_dispatch(vault):
+    """One entry the window cannot take is deferred, never sent (issue #3)."""
     _root, _state_root = vault
     import compile_memory
 
@@ -211,8 +212,11 @@ def test_complete_item_packer_rejects_oversized_daily_before_dispatch(vault):
         targets=(),
     )
 
-    with pytest.raises(ValueError, match="daily source exceeds compile input budget"):
-        compile_memory.pack_compile_batches(inputs, model=None)
+    packing = compile_memory.plan_compile_batches(inputs, model=None)
+
+    assert packing.batches == ()
+    assert [item.daily for item in packing.deferred] == [daily]
+    assert packing.deferred[0].needed_window_tokens > packing.deferred[0].window_tokens
 
 
 def test_complete_item_packer_drops_oversized_optional_context(vault):
@@ -526,7 +530,7 @@ def test_index_can_be_built_from_in_memory_note_bytes(vault):
         {"knowledge/notes/pending.md": page},
     )
 
-    assert b"[[knowledge/notes/pending]]" in output
+    assert b"[[pending]]" in output
     assert b"visible before publication" in output
     assert not (root / "knowledge/notes/pending.md").exists()
 
@@ -1660,6 +1664,7 @@ def test_run_does_not_record_provider_failure_after_cancellation(vault, monkeypa
 
 
 def test_run_packs_before_provider_dispatch(vault, monkeypatch):
+    """A day no window can take is set aside at packing, before any dispatch (issue #3)."""
     root, _state_root = vault
     daily = _daily(root)
     daily.write_bytes(b"x" * 28_000)
@@ -1687,7 +1692,7 @@ def test_run_packs_before_provider_dispatch(vault, monkeypatch):
         Namespace(file=None, all=False, dry_run=False, trigger="manual")
     )
 
-    assert result == 1
+    assert result == 0
     assert not list((root / "knowledge/daily/receipts").glob("*.md"))
 
 

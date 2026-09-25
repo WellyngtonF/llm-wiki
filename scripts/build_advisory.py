@@ -69,14 +69,21 @@ def _summary(content: str, limit: int) -> str:
 
 
 def _read_open_threads(slug: str) -> list[str]:
-    """Extract open threads from project state.md."""
-    # Validate by containment rather than ASCII slug format —
-    # session_start_project_state.py may generate Unicode slugs.
-    state_path = (PROJECTS_DIR / slug / "state.md").resolve()
-    content = _contained_state_text(state_path)
-    if content is None:
-        return []
-    return _open_thread_lines(content)
+    """Extract open threads from the project's state pages.
+
+    A project's work state is one `state.md` per repository, under
+    `knowledge/projects/<project>/<repository>/`; a folder from before that layout
+    keeps its own `state.md` and is still read.
+    """
+    # Validate by containment rather than ASCII slug format: project names may
+    # be Unicode.
+    project = PROJECTS_DIR / slug
+    threads: list[str] = []
+    for state_path in [project / "state.md", *sorted(project.glob("*/state.md"))]:
+        content = _contained_state_text(state_path.resolve())
+        if content is not None:
+            threads.extend(_open_thread_lines(content))
+    return threads
 
 
 def _contained_state_text(state_path: Path) -> str | None:

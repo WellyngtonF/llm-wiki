@@ -60,7 +60,7 @@ The slug system (5-step collision resolution) lets a single vault track unlimite
 │  Capture is deterministic and does not require an LLM.               │
 │                                                                      │
 │  MCP READS + ACTIONS                                                 │
-│  12 task-shaped MCP tools → local search/code/doctor/maintenance     │
+│  13 task-shaped MCP tools → local search/code/doctor/maintenance     │
 │  MCP responses and resources do not require an LLM.                  │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ captured session signals
@@ -327,7 +327,7 @@ no environment variables.
   JavaScript, TypeScript, Go, Rust, Java, C, C++, Ruby, PHP, C#, and Bash;
   materialized `.scm` queries, call graph, and impact analysis.
 - **MCP server**: the installer baseline includes the MCP package and exposes
-  12 task-shaped tools including `doctor`, a uniform response envelope, and
+  13 task-shaped tools including `doctor`, a uniform response envelope, and
   health/context resources. For manual dependency selection from source, use
   `uv sync --locked --extra mcp-server`; transport remains local stdio.
 - **Automatic health**: SessionStart injects only degraded/error findings; healthy

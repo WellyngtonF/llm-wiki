@@ -43,7 +43,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   ├── access_tracking.py           explicit telemetry promotion + decay stats
 │   ├── retrieval_telemetry.py       private bounded retrieval event cache
 │   ├── reflection.py                v4.0: A-MEM page consolidation
-│   ├── mcp_server.py                v4.0: MCP server (12 task-shaped tools, stdio)
+│   ├── mcp_server.py                v4.0: MCP server (13 task-shaped tools, stdio)
 │   ├── integration_adapter.py       v4.x: thin native lifecycle adapter
 │   ├── event_envelope.py            v4.x: shared lifecycle event contract
 │   ├── mcp_contract.py              v4.x: uniform MCP response envelope/resources
@@ -71,10 +71,11 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   │   ├── receipts/                v2 current; immutable v3 proposed target
 │   │   └── archive/YYYY-MM/bag-…/   immutable uncompressed BagIt packages
 │   ├── notes/                       durable OKF pages (flat slugs)
-│   ├── projects/<slug>/             state.md projection + append-only journal.md
+│   ├── projects/project-map.md      private project map (registered projects)
+│   ├── projects/<project>/          one folder per registered project
+│   │   └── <repository>/            its append-only journal.md + state.md projection
 │   │                                (only state.md/context.md join the corpus;
-│   │                                no slug for a directory inside the vault,
-│   │                                a platform temp entry, or $HOME — 2026-09-23)
+│   │                                unregistered work has no folder — ADR 0002)
 │   ├── raw/                         immutable sources
 │   ├── inbox/                       unprocessed staging
 │   └── feedback/                    correction candidates
@@ -428,7 +429,7 @@ deterministic rendering, MCP routing, doctor diagnostics, and qualification gate
 
 The implemented Python/Pyright slice keeps the existing structural Evidence Graph
 and adds a Python 3.10-compatible, read-only LSP runtime owned by LLM Wiki. It serves
-precise live navigation through modes of the existing 12 task-shaped MCP tools. It
+precise live navigation through modes of the existing 13 task-shaped MCP tools. It
 adds no Serena runtime dependency, Rust rewrite, second graph, catalog, active
 pointer, runtime root, persistent daemon, semantic result cache, or MCP tool.
 Query-time LSP observations are not written into an active generation.
@@ -531,7 +532,7 @@ or nonzero active state remains fail-closed.
   VERIFY-BEFORE-WRITE), `flush_memory.py` (3-tier classification),
   `maybe_compile.py` (PID-locked spawn), `search_memory.py` (entry point; fusion lives in `retrieval.py`),
   `llm_client.py` (5 backends + fake), `integration_adapter.py` (thin host
-  lifecycle boundary), `mcp_server.py` (12 task-shaped tools), and `doctor.py`.
+  lifecycle boundary), `mcp_server.py` (13 task-shaped tools), and `doctor.py`.
 - `tests/` — full regression suite. Hermetic via `conftest.py` (pins
   `LLM_WIKI_ROOT` to checkout, redirects `LLM_WIKI_STATE_ROOT` to a temp
   dir, defaults `MEMORY_LLM_PROVIDER=fake`).
@@ -552,7 +553,8 @@ or nonzero active state remains fail-closed.
 - `rules/` — 3 rule files (wiki-files, raw-files, output-files).
 - `integrations/` — thin host wiring: claude-code (settings.json) and codex
   (hooks.json). MCP is the common read/action interface.
-  Obsidian is an optional Markdown viewer and requires no bundled integration.
+  `integrations/obsidian/` holds viewer CSS only (the claims-ledger snippet);
+  nothing an agent needs depends on Obsidian (ADR 0003).
 - `benchmark/` — retrieval and frozen contradiction corpora/runners, including
   `run_benchmark.py`, `run_retrieval_v2.py`, `retrieval-v2.json`,
   `retrieval-v2.schema.json`, `legacy-60-v1.json`,
@@ -577,12 +579,64 @@ or nonzero active state remains fail-closed.
 - `knowledge/notes/` — durable OKF pages, flat `<slug>.md`. All gitignored:
   the repository ships no memory (2026-09-10). The decision pages named in
   this document are the owner's private record; the contracts are stated here.
-- `knowledge/projects/<slug>/` — generated `state.md`, append-only
-  `knowledge/projects/<slug>/journal.md`,
-  `context.md`, `.blackboard/`. Template tracked; real projects gitignored.
-  `context.md` is written on request by
-  `uv run python scripts/build_context.py --slug <name> --write`; see
+  A note the compile creates from a registered repository's work carries
+  `project:` (after `type:` and `title:`), resolved from the cited daily entries
+  through the current project map, never chosen by the model; updates leave the
+  frontmatter as it is (`scripts/note_project.py`, ADR 0002).
+- `knowledge/projects/<project>/<repository>/` — the work state of one registered
+  repository: append-only `journal.md` (sealed `journal.NNNNNN-NNNNNN.md` segments
+  beside it), the generated `state.md` (frontmatter `project:` and `repository:`),
+  and `bootstrap.md` on first sight. Template tracked; real projects gitignored
+  (`scripts/work_state.py`, ADR 0002).
+  A repository is named by its main checkout: a working directory resolves
+  upward to its git root, and a worktree's `.git` pointer file is followed to the
+  checkout that owns it, so subfolders and worktrees share one folder. The walk
+  never reaches the vault, the home directory, or an ancestor of either
+  (`scripts/repository_identity.py`). `<repository>` is the main checkout's folder
+  name; a second repository of the same project with that name gets the folder
+  name plus its parent, then the git `owner-repo`, then the grandparent, then a
+  path hash. Collisions are resolved within the project only.
+  A directory whose repository the project map does not list gets no journal, no
+  state and no folder; its capture into daily logs and session records, and the
+  compile, are unchanged.
+  A journal is named by the key its events carry, read back from its first event,
+  so a folder that moves keeps its journal and sequence. A repository with no
+  journal yet takes `<repository>-<8 hex of its main checkout>`, suffixed `-2`,
+  `-3` … when an earlier journal under that key was deleted.
+  `knowledge/projects/<project>/index.md` is reserved for the generated project
+  page (issue #17).
+  `context.md` is written on request, for a registered project only, by
+  `uv run python scripts/build_context.py <project> --write` into
+  `knowledge/projects/<project>/`; see
   `docs/research/2026-09-18-the-project-context-page-gets-its-command-back.md`.
+  A folder written before this layout (`knowledge/projects/<slug>/journal.md`) is
+  read by nothing and left alone until the one-off migration (issue #18).
+- Daily-log entries name the registered work they came from: a prompt or tool
+  breadcrumb carries `<project>/<repository>` in its tag (`-` for unregistered
+  work), and a session-end entry or capture block carries ``- Project: `<project>` ``
+  and ``- Repository: `<main checkout>` `` lines (neither for unregistered work).
+- `knowledge/projects/project-map.md` — the project map (ADR 0002): the projects
+  the owner registered and the repositories each is made of. Private: it falls
+  under the `knowledge/projects/*` denial in `.gitignore`, and nothing is added to
+  the allowlist. Frontmatter `type: project-context`, then one `## <project>`
+  heading per project, each followed by `- <main checkout path>` bullets. A
+  project name is the owner's words as a folder-safe slug; `general` is reserved
+  for notes without a project. The parser (`scripts/project_map.py`) tolerates
+  hand edits in Obsidian: prose, blank lines, other headings, backticks, either
+  slash, trailing slashes, and case on Windows. The `manage_project` MCP tool
+  edits it with line edits through the Markdown transaction API (create, attach,
+  detach, rename, remove, list); attaching a repository that belongs to another
+  project moves it. Every edit keeps the work-state folders in step in the same
+  transaction as the map: attaching a repository to another project moves its
+  folder, renaming a project moves the project's folder, and detaching a
+  repository or removing a project deletes its work-state folder. Notes are never
+  touched. The transaction can be undone for two days (doctor
+  `transaction-undo`); the directories it emptied stay until then, because the
+  undo puts the files back into them, and the next edit after the window removes
+  them. Doctor's `projects` check reports duplicate projects, a
+  repository in two projects, paths that do not exist or are not a main checkout,
+  and reserved or unusable names. Lookups ask `ProjectMap.project_of(<main
+  checkout>)`; the session-start count of active projects is the map's.
 - `knowledge/daily/archive/YYYY-MM/bag-<timestamp>-<id>/` — private immutable,
   uncompressed BagIt-style daily-log bags and
   a derived archive index. Archive means move, never delete; evidence resolves by

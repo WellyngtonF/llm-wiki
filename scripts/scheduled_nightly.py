@@ -7,7 +7,7 @@ runtime reclaim, the deferred memory queue, yesterday's session
 consolidation; the compile (spawned through `maybe_compile`, followed until
 it finishes or the wait bound passes) and user-turn keying; then the steps
 that read the compile's output — orphaned-checkpoint clearing, structural
-lint, backlink repair, the FTS5 index, registered-repository refresh,
+lint, the FTS5 index, registered-repository refresh,
 generation pruning, model weights, the bounded generation refresh —
 telemetry compaction, the health report, report pruning and the bounded
 fast-forward of the checkout. Never requires user interaction. All output
@@ -355,12 +355,6 @@ def _post_compile_steps() -> list[_Step]:
             "Step 3: structural lint...",
             "lint",
             _script("lint_memory.py"),
-            120,
-        ),
-        _Step(
-            "Step 3a: repairing owed backlinks...",
-            "backlinks",
-            _script("repair_backlinks.py") + ["--apply"],
             120,
         ),
         _Step(

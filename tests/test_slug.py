@@ -1,10 +1,12 @@
-"""Regression tests: slug computation, collision resolution, strict ownership.
+"""Regression tests: repository folder names, collision resolution, strict ownership.
 
-Covers the Round 2 / Round 5 fixes to `session_start_project_state.py`:
+Covers the Round 2 / Round 5 fixes to `session_start_project_state.py`, which since
+Stage 2 (ADR 0002) name a registered repository's folder inside its project's folder:
   - Base slug sanitization (Cyrillic preservation, hyphens, edge cases).
-  - Collision resolution: base → parent-of-parent → git owner-repo → grandparent → path-hash.
+  - Collision resolution within one project: base → parent-of-parent → git
+    owner-repo → grandparent → path-hash.
   - Strict ownership: state.md without a `- Project root:` line is NOT owned.
-  - Idempotency: re-compute returns the same slug.
+  - Idempotency: re-compute returns the same folder.
 """
 from __future__ import annotations
 
@@ -13,12 +15,13 @@ from pathlib import Path
 import yaml
 from session_start_project_state import (
     _base_slug,
-    _compute_slug,
     _git_remote_slug,
     _path_hash_suffix,
     _render_new_state,
     _slug_owns_dir,
+    repository_folder,
 )
+from work_state import Placement
 
 # ---------- _base_slug ----------
 
@@ -143,101 +146,104 @@ def test_slug_owns_strict_rejects_missing_source(tmp_path: Path):
     assert _slug_owns_dir("ambiguous", tmp_path / "someproj", projects) is False
 
 
-# ---------- _compute_slug end-to-end ----------
+# ---------- repository_folder end-to-end ----------
 
-def test_compute_slug_unique(tmp_path: Path):
-    """Clean slug — base strategy wins."""
+def _projects(tmp_path: Path) -> Path:
     projects = tmp_path / "vault" / "knowledge" / "projects"
-    projects.mkdir(parents=True)
+    (projects / "product-a").mkdir(parents=True)
+    return projects
+
+
+def _folder(repository: Path, projects: Path) -> str:
+    """The repository's folder inside project `product-a`."""
+    return repository_folder(repository, projects / "product-a", projects)
+
+
+def _claim(projects: Path, folder: str, root: Path | str) -> None:
+    """What the first checkpoint leaves: a state.md recording its Project root."""
+    (projects / "product-a" / folder).mkdir()
+    (projects / "product-a" / folder / "state.md").write_text(
+        f"# {folder}\n- Project root: `{root}`\n", encoding="utf-8"
+    )
+
+
+def test_repository_folder_unique(tmp_path: Path):
+    """Clean folder name — base strategy wins."""
+    projects = _projects(tmp_path)
     proj = tmp_path / "unique"
     proj.mkdir()
-    assert _compute_slug(proj, projects) == "unique"
+    assert _folder(proj, projects) == "unique"
 
 
-def test_compute_slug_collision_gets_parent_of_parent(tmp_path: Path):
-    """Two projects with the same basename → second gets pop suffix."""
-    projects = tmp_path / "vault" / "knowledge" / "projects"
-    projects.mkdir(parents=True)
+def test_repository_folder_collision_gets_parent_of_parent(tmp_path: Path):
+    """Two repositories of one project with the same basename → second gets pop suffix."""
+    projects = _projects(tmp_path)
 
-    # Project A owns "frontend"
-    parent_a = tmp_path / "app-a"
-    parent_a.mkdir()
-    front_a = parent_a / "frontend"
-    front_a.mkdir()
-    slug_a = _compute_slug(front_a, projects)
-    assert slug_a == "frontend"
-    # Simulate SessionStart writing state.md
-    (projects / slug_a).mkdir()
-    (projects / slug_a / "state.md").write_text(
-        f"# frontend\n- Project root: `{front_a}`\n", encoding="utf-8"
-    )
+    front_a = tmp_path / "app-a" / "frontend"
+    front_a.mkdir(parents=True)
+    assert _folder(front_a, projects) == "frontend"
+    _claim(projects, "frontend", front_a)
 
-    # Project B competes
-    parent_b = tmp_path / "app-b"
-    parent_b.mkdir()
-    front_b = parent_b / "frontend"
-    front_b.mkdir()
-    slug_b = _compute_slug(front_b, projects)
-    assert slug_b != slug_a
-    # Must use parent-of-parent
-    assert slug_b == "frontend-app-b"
+    front_b = tmp_path / "app-b" / "frontend"
+    front_b.mkdir(parents=True)
+    assert _folder(front_b, projects) == "frontend-app-b"
 
 
-def test_compute_slug_idempotent(tmp_path: Path):
-    """Re-computing for the same project returns the same slug."""
-    projects = tmp_path / "vault" / "knowledge" / "projects"
-    projects.mkdir(parents=True)
+def test_a_collision_in_another_project_is_no_collision(tmp_path: Path):
+    """Collisions are scoped within the project: another project's folder does not count."""
+    projects = _projects(tmp_path)
+    other = projects / "product-b" / "frontend"
+    other.mkdir(parents=True)
+    (other / "state.md").write_text("# frontend\n- Project root: `/elsewhere`\n", encoding="utf-8")
+    front = tmp_path / "app" / "frontend"
+    front.mkdir(parents=True)
+
+    assert _folder(front, projects) == "frontend"
+
+
+def test_repository_folder_idempotent(tmp_path: Path):
+    """Re-computing for the same repository returns the same folder."""
+    projects = _projects(tmp_path)
     proj = tmp_path / "proj"
     proj.mkdir()
-    slug_first = _compute_slug(proj, projects)
-    (projects / slug_first).mkdir()
-    (projects / slug_first / "state.md").write_text(
-        f"# {slug_first}\n- Project root: `{proj}`\n", encoding="utf-8"
-    )
-    slug_second = _compute_slug(proj, projects)
-    assert slug_first == slug_second
+    first = _folder(proj, projects)
+    _claim(projects, first, proj)
+    assert _folder(proj, projects) == first
 
 
-def test_rendered_template_has_no_placeholders_and_preserves_slug_ownership(tmp_path: Path):
-    projects = tmp_path / "vault" / "knowledge" / "projects"
-    projects.mkdir(parents=True)
+def test_rendered_template_has_no_placeholders_and_preserves_folder_ownership(tmp_path: Path):
+    projects = _projects(tmp_path)
     project = tmp_path / "My Project"
     project.mkdir()
     template = Path(__file__).resolve().parent.parent / "knowledge/projects/_template/state.md"
 
-    rendered = _render_new_state(template, "my-project", project)
-    state_dir = projects / "my-project"
+    rendered = _render_new_state(template, Placement("product-a", project, "my-project"), project)
+    state_dir = projects / "product-a" / "my-project"
     state_dir.mkdir()
     (state_dir / "state.md").write_text(rendered, encoding="utf-8")
 
-    assert "<project-slug>" not in rendered
-    # Quoted, so a slug that redaction left looking like `[redacted-api-key]`
+    assert "<project" not in rendered and "<repository>" not in rendered
+    # Quoted, so a name that redaction left looking like `[redacted-api-key]`
     # still reads back as a string rather than a YAML list.
-    assert 'project: "my-project"' in rendered
-    assert yaml.safe_load(rendered.split("---")[1])["project"] == "my-project"
+    assert 'project: "product-a"' in rendered
+    frontmatter = yaml.safe_load(rendered.split("---")[1])
+    assert frontmatter["project"] == "product-a"
+    assert frontmatter["repository"] == "my-project"
+    assert "# product-a/my-project - State" in rendered
     assert f"- Project root: `{project}`" in rendered
-    assert _compute_slug(project, projects) == "my-project"
+    assert _folder(project, projects) == "my-project"
 
 
-def test_compute_slug_hash_suffix_last_resort(tmp_path: Path):
+def test_repository_folder_hash_suffix_last_resort(tmp_path: Path):
     """If base, pop, git, and grandparent all collide, hash suffix kicks in."""
-    projects = tmp_path / "vault" / "knowledge" / "projects"
-    projects.mkdir(parents=True)
-
-    # Create a project dir with no git and no meaningful parents
+    projects = _projects(tmp_path)
     proj = tmp_path / "orphan"
     proj.mkdir()
-
-    # Pre-occupy every candidate the resolver would try
-    for slug in ["orphan"]:
-        (projects / slug).mkdir()
-        (projects / slug / "state.md").write_text(
-            f"# {slug}\n- Project root: `/somewhere/else`\n", encoding="utf-8"
-        )
+    _claim(projects, "orphan", "/somewhere/else")
 
     # With no parent-of-parent matching, it should still resolve — either
     # via grandparent (tmp_path.name) or via hash. The output must NOT be
     # bare "orphan" (that's taken).
-    slug = _compute_slug(proj, projects)
-    assert slug != "orphan"
-    assert slug.startswith("orphan") or slug == "root"
+    folder = _folder(proj, projects)
+    assert folder != "orphan"
+    assert folder.startswith("orphan") or folder == "root"

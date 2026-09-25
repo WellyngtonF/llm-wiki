@@ -247,7 +247,7 @@ def test_code_navigation_python_slice_is_reported_as_current() -> None:
         "document synchronization",
         "session-manager capacity",
         "normalized navigation facade",
-        "existing 12 task-shaped MCP tools",
+        "existing 13 task-shaped MCP tools",
         "no Serena runtime dependency",
         "not written into an active generation",
         "cache/code-tools/pyright/1.1.411/",
@@ -359,8 +359,32 @@ def test_agent_contract_mentions_three_zone_process_rule():
     )
     template = ROOT / "integrations" / "obsidian" / "Article-to-Inbox.json"
     assert not template.exists(), (
-        "Obsidian is an optional Markdown viewer; do not bundle ingestion wiring"
+        "Obsidian is a reading surface: ship viewer files only, never ingestion "
+        "wiring that makes it required (ADR 0003)"
     )
+
+
+def test_the_sign_off_rule_records_product_decisions_as_public_adrs():
+    """ADR 0001: product decisions live in docs/adr/, the vocabulary in
+    CONTEXT.md, and the fork is where improvements are pushed.
+    """
+    contract = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    sign_off = contract.split("### Architecture changes require explicit sign-off", 1)[
+        1
+    ].split("\n### ", 1)[0]
+    sign_off_words = " ".join(sign_off.split())
+    improve = contract.split('"Improve the system"', 1)[1].split("\n- ", 1)[0]
+
+    assert (ROOT / "AGENTS.md").read_bytes() == (ROOT / "CLAUDE.md").read_bytes()
+    assert "`CONTEXT.md`" in sign_off
+    assert "`docs/adr/`" in sign_off
+    assert "`NNNN-slug.md`" in sign_off
+    assert "private knowledge" in sign_off_words
+    assert "`docs/STRUCTURE.md`" in sign_off
+    assert "`knowledge/notes/` (decision page)" not in sign_off
+    assert "WellyngtonF/llm-wiki" in improve
+    assert (ROOT / "CONTEXT.md").is_file()
+    assert sorted((ROOT / "docs" / "adr").glob("0001-*.md"))
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +536,7 @@ STAGE_TWO_RUNTIME_PATHS = (
     "cache/claims.sqlite3",
     "scripts/schemas/",
     "knowledge/daily/receipts/",
-    "knowledge/projects/<slug>/journal.md",
+    "knowledge/projects/<project>/<repository>/",
     "knowledge/daily/archive/YYYY-MM/bag-",
 )
 
@@ -907,19 +931,47 @@ def _unpublished_notes(paths: set[str]) -> set[str]:
     }
 
 
+def _linked_note_target(target: str) -> str | None:
+    """The note a wikilink names: bare, vault-relative, or rooted at the repository.
+
+    A bare `[[slug]]` is read as a flat note, the layout the compile writes; a
+    link with a slash names a note only when its path lies under `notes/`.
+    """
+    target = target.strip().removesuffix(".md")
+    if "/" not in target:
+        return f"knowledge/notes/{target}.md" if target else None
+    for prefix in ("knowledge/notes/", "notes/"):
+        if target.startswith(prefix):
+            return f"knowledge/notes/{target[len(prefix):]}.md"
+    return None
+
+
 def _linked_note_paths(text: str) -> set[str]:
-    """The note pages this file names by path: a wikilink, or a back-quoted path."""
-    linked = re.findall(r"\[\[knowledge/notes/([^\]|]+)", text)
+    """The note pages this file names: a wikilink, or a back-quoted path."""
+    linked = {
+        _linked_note_target(target)
+        for target in re.findall(r"\[\[([^\]|#]+)", text)
+    }
     quoted = re.findall(r"`knowledge/notes/([^`]+?)\.md`", text)
-    return {f"knowledge/notes/{name}.md" for name in [*linked, *quoted]}
+    return {path for path in linked if path} | {
+        f"knowledge/notes/{name}.md" for name in quoted
+    }
 
 
 def test_the_vault_index_and_log_name_only_published_notes() -> None:
     """A running vault rewrites these two files, and they are the only tracked
     knowledge files it writes. If one of them names a page this repository does
     not publish, the page is personal and the file must not be committed."""
-    sample = "- [[knowledge/notes/private-thing]] — a page this repo does not ship.\n"
-    assert _linked_note_paths(sample) == {"knowledge/notes/private-thing.md"}
+    sample = (
+        "- [[private-thing]] — a page this repo does not ship.\n"
+        "- [[notes/private-other|alias]] and [[knowledge/notes/private-old#Part]].\n"
+        "- [[projects/product-a/state]] is not a note.\n"
+    )
+    assert _linked_note_paths(sample) == {
+        "knowledge/notes/private-thing.md",
+        "knowledge/notes/private-other.md",
+        "knowledge/notes/private-old.md",
+    }
 
     leaked = {}
     for name in _VAULT_METADATA_FILES:

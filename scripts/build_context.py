@@ -137,16 +137,23 @@ def _recent_text(md: Path, cutoff: float) -> str | None:
 
 
 def _read_state_handoff(slug: str) -> str:
-    """Read the 'Where we left off' section from project state.md."""
-    state_path = PROJECTS_DIR / slug / "state.md"
+    """Read the 'Where we left off' sections from the project's state pages.
+
+    One `state.md` per repository under `knowledge/projects/<project>/`, and the
+    project folder's own one from before that layout.
+    """
+    project = PROJECTS_DIR / slug
     # Containment guard: slug must not escape PROJECTS_DIR (no .., no abs).
-    if not state_path.resolve().is_relative_to(PROJECTS_DIR.resolve()):
+    if not project.resolve().is_relative_to(PROJECTS_DIR.resolve()):
         print(f"build_context: slug escapes PROJECTS_DIR: {slug!r}", file=sys.stderr)
         return ""
-    content = _existing_text(state_path)
-    if content is None:
-        return ""
-    return _where_we_left_off(content)
+    handoffs = []
+    for state_path in [project / "state.md", *sorted(project.glob("*/state.md"))]:
+        content = _existing_text(state_path)
+        handoff = _where_we_left_off(content) if content is not None else ""
+        if handoff:
+            handoffs.append(handoff)
+    return "\n\n".join(handoffs)
 
 
 def _existing_text(path: Path) -> str | None:
@@ -385,7 +392,7 @@ def _heartbeat_lines(state: dict, slug: str) -> list[tuple[str, str]]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Build per-project context for SessionStart.")
-    p.add_argument("slug", help="Project slug (e.g. 'your-project')")
+    p.add_argument("slug", help="Registered project name (e.g. 'your-project')")
     p.add_argument("--max-chars", type=int, default=2000)
     p.add_argument("--write", action="store_true", help="Write to knowledge/projects/<slug>/context.md")
     args = p.parse_args()
@@ -394,6 +401,12 @@ def main() -> int:
     if args.write:
         if not re.match(r"^[a-zA-Z0-9_-]+$", args.slug):
             print("build_context: slug must be alphanumeric+hyphens only", file=sys.stderr)
+            return 1
+        from project_map import read_project_map
+
+        # Only a registered project has a folder under `knowledge/projects/` (ADR 0002).
+        if read_project_map(ROOT).project_named(args.slug) is None:
+            print(f"build_context: {args.slug!r} is not a registered project", file=sys.stderr)
             return 1
         out = PROJECTS_DIR / args.slug / "context.md"
         # Containment guard: slug must not escape PROJECTS_DIR (no .., no abs).
