@@ -61,6 +61,47 @@ def test_counter_accumulates_and_surfaces_a_session_line(diagnostics):
     assert "post_tool_append 3" in line
 
 
+def test_a_breadcrumb_timeout_is_dropped_and_other_timeouts_are_lost(diagnostics, capsys):
+    module, state = diagnostics
+    gate = TimeoutError("timed out waiting for the global Markdown writer gate")
+
+    module.record_capture_failure("user_prompt_append", "TimeoutError", error=gate)
+    module.record_capture_failure("post_tool_append", "TimeoutError", error=gate)
+    module.record_capture_failure("session_end", "TimeoutError", error=gate)
+
+    assert module.capture_dropped_totals(state) == {
+        "post_tool_append": 1,
+        "user_prompt_append": 1,
+    }
+    assert module.capture_failure_totals(state) == {"session_end": 1}
+    assert "session_end 1" in module.capture_failure_line(state)
+    module._print_summary(state)
+    assert "post_tool_append: 1 breadcrumb(s) dropped at the writer gate" in capsys.readouterr().out
+
+
+def test_a_fresh_drop_does_not_make_an_old_loss_live_again(diagnostics):
+    module, state = diagnostics
+    state["capture_failures"] = {
+        "post_tool_append": {
+            "count": 1,
+            "last_at": _recent_moment(days_ago=30),
+            "last_reason": "OSError: disk full",
+        }
+    }
+
+    module.record_capture_failure(
+        "post_tool_append", "TimeoutError", error=TimeoutError("writer gate")
+    )
+
+    assert module.capture_failure_totals(state) == {"post_tool_append": 1}
+    assert module.capture_failure_is_live(state) is False
+    assert module.capture_failure_line(state) == ""
+
+    module.record_capture_failure("post_tool_append", "OSError: disk full")
+
+    assert module.capture_failure_is_live(state) is True
+
+
 def test_clean_state_produces_no_session_line(diagnostics):
     module, _ = diagnostics
 

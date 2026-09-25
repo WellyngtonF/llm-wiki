@@ -3020,8 +3020,8 @@ def _pyright_check(
     details["recommended_action"] = _pyright_recommended_action(codes)
     return _result(
         "pyright",
-        "degraded",
-        _pyright_degraded_message(codes),
+        "ok",
+        _pyright_unverified_message(codes, details["recommended_action"]),
         details,
     )
 
@@ -3032,10 +3032,18 @@ def _extend_unique(codes: list[str], extra) -> None:
             codes.append(code)
 
 
-def _pyright_degraded_message(codes: list[str]) -> str:
+# Pyright is optional code navigation: an unverified server is never launched,
+# and queries answer from structural evidence instead, so an identity that cannot
+# be qualified is information for the operator, not a health failure. The codes
+# and the remedy stay in the message. Doctor running out of time or failing to
+# inspect at all still degrades.
+def _pyright_unverified_message(codes: list[str], action: str) -> str:
     """Name which lookup failed (issue #23): `node_major: null` alone said nothing."""
     named = ", ".join(codes) if codes else "unspecified"
-    return f"Pyright identity is degraded or mismatched: {named}."
+    return (
+        f"Pyright is not verified ({named}); it is optional, and code navigation "
+        f"answers from structural evidence until it is. To enable it: {action}."
+    )
 
 
 def _record_pyright_degradation(identity, details: dict, codes: list[str]) -> None:
@@ -4680,9 +4688,19 @@ def _deferred_sentence(details: dict) -> str:
     )
 
 
+def _dropped_sentence(details: dict) -> str:
+    dropped = int(details.get("dropped", 0))
+    if not dropped:
+        return ""
+    return (
+        f" {dropped} daily-log breadcrumb(s) were dropped while another writer held"
+        " the Markdown gate; the session record keeps them, so none is counted as lost."
+    )
+
+
 def _capture_loss_result(lost: int, live: bool, details: dict) -> dict:
     """The capture verdict, once the diagnostics themselves have been read."""
-    suffix = _deferred_sentence(details)
+    suffix = _deferred_sentence(details) + _dropped_sentence(details)
     if live:
         return _result("capture", "degraded", f"{lost} capture(s) were lost.{suffix}", details)
     if lost:
@@ -4734,6 +4752,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
     """Report captures the hooks lost, so a silent loss is visible in health."""
     from capture_diagnostics import (
         capture_deferred_totals,
+        capture_dropped_totals,
         capture_failure_is_live,
         capture_failure_totals,
         last_capture_failure_at,
@@ -4747,6 +4766,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
         "lost": lost,
         "kinds": totals,
         "deferred": sum(capture_deferred_totals(state).values()),
+        "dropped": sum(capture_dropped_totals(state).values()),
         "trail": "logs/capture-failures.jsonl",
         "state_error": state_error,
         "last_at": last_capture_failure_at(state),
