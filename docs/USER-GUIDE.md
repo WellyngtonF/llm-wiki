@@ -516,6 +516,58 @@ night, which also catches notes you edited by hand and work state that changed
 since. A renamed project's existing notes keep their old `project:` and show on the
 General page until you change it. The pages are private, like your notes.
 
+### Moving to registered projects (one-off)
+
+Before the project map, every directory an agent worked in got its own flat
+`knowledge/projects/<slug>/` folder: subfolders, worktrees, scratch directories, the
+home directory. Nothing reads those folders any more. One command, in three steps,
+turns the ones that name a real repository into registered projects and removes the
+rest:
+
+```bash
+uv run --locked --no-sync python scripts/migrate_projects.py --propose   # 1. write the proposals
+uv run --locked --no-sync python scripts/migrate_projects.py             # 2. dry run: writes nothing
+uv run --locked --no-sync python scripts/migrate_projects.py --apply     # 3. apply them
+```
+
+1. `--propose` resolves the roots each old folder recorded to their repository's
+   main checkout (a subfolder or a worktree names its repository; a root that no
+   longer exists or is in no git repository names none) and writes two private files
+   for you to edit in Obsidian:
+   - `knowledge/projects/project-map.proposed.md`, in the project map's format: one
+     project per repository the map does not register yet, named after its folder.
+     Rename a project, move a bullet under another heading to group repositories
+     into one product, or delete a bullet to leave a repository unregistered.
+   - `knowledge/projects/note-projects.proposed.md`: one `- <note>: <project>` line
+     per live note (`-` for none) with the reason. The daily entries a note's
+     evidence cites decide, as the compile does: the project most of them name wins,
+     and a split gives none. Without a winner, a project whose name starts the
+     note's slug is proposed. Change the project after the colon; a note that
+     already carries a project is listed for reference and never changed.
+
+   It refuses to replace proposals that already exist; `--force` proposes again.
+2. The dry run shows the map that will be written, `KEEP` or `DELETE` with the
+   reason for every old folder, the notes that get `project:`, and the checkpoint
+   queue keys it will clear from `run/state.json`, then lists the folders to be
+   deleted. It writes nothing.
+3. `--apply` requires both proposals. It prints the deletion list again, then in one
+   transaction adds the proposed repositories to the map (a repository the map
+   already registers stays where it is), moves each kept journal to
+   `knowledge/projects/<project>/<repository>/` with its `state.md` generated again,
+   deletes every other old folder, writes `project:` onto the assigned notes that
+   have none, and removes the two proposals. It prints the transaction id:
+   `uv run --locked --no-sync python scripts/markdown_transaction.py undo <id>`
+   reverts all of it within the 2-day undo window; after that the deletion is
+   permanent. Running it again finds nothing to migrate.
+
+When several old folders name one repository, the one with the most events moves
+and the others are deleted: a journal is named by the key its events carry and its
+sequence continues from committed checkpoints, so two journals cannot be merged into
+one. When the repository already keeps a journal in the new layout, all of them are
+deleted. Pending checkpoint events that `run/state.json` holds for a journal no
+registered repository carries can never be written; apply clears them after the
+transaction, and an undo does not bring them back.
+
 ### Compiling knowledge manually
 
 ```bash
@@ -958,7 +1010,9 @@ uv run python scripts/install_models.py --check  # report only
 Each model is fetched at its pinned commit, only the files the loaders read,
 and `model.safetensors` is checked against the size and SHA-256 recorded beside
 the revision; a file that does not match is removed and the command fails.
-Present files are never fetched again. Until the weights are there, `doctor`
+Present files are never fetched again. Without the semantic extra the command
+exits 3 (not applicable), and the nightly pass reports its model step as
+`skipped`, not failed. Until the weights are there, `doctor`
 reports `models: degraded` with that command and search stays lexical.
 A first query in a fresh process loads the model: measured on one host, about
 11 s for a cold CLI query against 4.5 s lexical-only, while the MCP server loads

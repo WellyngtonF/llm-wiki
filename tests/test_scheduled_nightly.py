@@ -495,3 +495,78 @@ def _missing_report_lines(tmp_path) -> list[str]:
 def _lint_artifact(tmp_path) -> str:
     artifact = next((tmp_path / "logs" / "maintenance").glob("*-lint-*.err.log"))
     return artifact.read_text(encoding="utf-8")
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+
+# Every step answers "ok" except the model installation, which runs for real in
+# an interpreter that cannot import the semantic extra, installed or not.
+ABSENT_LIBRARY_STEP_SCRIPT = """\
+import runpy
+import sys
+from pathlib import Path
+
+
+class _SemanticExtraAbsent:
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] == "huggingface_hub":
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return None
+
+
+script = Path(sys.argv[1])
+if script.name != "install_models.py":
+    print("ok", script.name)
+    raise SystemExit(0)
+sys.meta_path.insert(0, _SemanticExtraAbsent())
+sys.argv = [str(script)]
+runpy.run_path(str(script), run_name="__main__")
+"""
+
+
+def test_a_night_without_the_semantic_extra_skips_the_models_and_succeeds(tmp_path, monkeypatch):
+    """Issue 1: an optional library that is absent is a skipped step, not a failed night."""
+    import time
+    from datetime import datetime, timezone
+
+    import doctor
+    import scheduled_nightly
+
+    state_file = _redirected_night(tmp_path, monkeypatch)
+    _stub_checkout_steps(monkeypatch)
+    fake = tmp_path / "step.py"
+    fake.write_text(ABSENT_LIBRARY_STEP_SCRIPT, encoding="utf-8")
+    monkeypatch.setattr(
+        scheduled_nightly, "_script", lambda name: [sys.executable, str(fake), str(SCRIPTS_DIR / name)]
+    )
+
+    exit_status = scheduled_nightly._run_nightly_body(ownership=None)
+
+    report = next((tmp_path / "logs").glob("nightly-*.md")).read_text(encoding="utf-8")
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    scheduler = doctor._scheduler_check(
+        SCRIPTS_DIR.parent, tmp_path, datetime.now(timezone.utc), time.monotonic() + 5
+    )
+    assert (exit_status, state["last_nightly_status"], scheduler["status"]) == (0, "success", "ok")
+    assert "  models: skipped — install_models: huggingface_hub is not installed" in report
+    assert "=== Nightly pass complete (failures=0) ===" in report
+
+
+def test_a_models_step_that_really_fails_still_fails_the_night(tmp_path, monkeypatch):
+    """Only the declared not-applicable exit is a skip; an incomplete download is a failure."""
+    import install_models
+    import scheduled_nightly
+
+    state_file = _redirected_night(tmp_path, monkeypatch)
+    _stub_checkout_steps(monkeypatch)
+    fake = tmp_path / "step.py"
+    fake.write_text(
+        "import sys\n"
+        f"raise SystemExit({install_models.EXIT_INCOMPLETE} if sys.argv[1] == 'install_models.py' else 0)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scheduled_nightly, "_script", lambda name: [sys.executable, str(fake), name])
+
+    assert scheduled_nightly._run_nightly_body(ownership=None) == 1
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert (state["last_nightly_status"], state["last_nightly_failure"]["failures"]) == ("failed", 1)

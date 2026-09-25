@@ -33,7 +33,12 @@ from doctor import (  # noqa: E402
     DEFAULT_GENERATION_SOURCE_LIMIT,
     run_generation_maintenance,
 )
-from maintenance_helpers import prune_maintenance_output, trim_scheduler_logs  # noqa: E402
+from install_models import EXIT_NOT_APPLICABLE as MODELS_NOT_APPLICABLE  # noqa: E402
+from maintenance_helpers import (  # noqa: E402
+    prune_maintenance_output,
+    step_failed,
+    trim_scheduler_logs,
+)
 from maintenance_helpers import run_step as _run_step  # noqa: E402
 from maintenance_helpers import wait_for_compile_idle as _wait_for_compile_idle
 from memory_state import (  # noqa: E402
@@ -161,12 +166,17 @@ def _record_nightly_skip(today: str, reason: str) -> None:
 
 @dataclass(frozen=True)
 class _Step:
-    """One nightly subprocess step: what to announce, run, and how long to wait."""
+    """One nightly subprocess step: what to announce, run, and how long to wait.
+
+    `not_applicable_exit` is the exit code with which the step says it does not
+    apply to this vault; the pass reports it skipped and does not count it.
+    """
 
     message: str
     label: str
     command: list[str]
     timeout: int
+    not_applicable_exit: int | None = None
 
 
 def _script(name: str) -> list[str]:
@@ -377,7 +387,7 @@ def _post_compile_steps() -> list[_Step]:
         ),
         _Step(
             # Issue #24, section D1: a foreign generation is never activated,
-            # so the pruner below reports it pending and keeps it forever.
+            # so the pruner below names it a code generation and keeps it.
             # This retires, per checkout, every generation of a checkout that
             # is gone or marked not indexed and all but the newest two of the
             # rest, each repository under its own fence.
@@ -407,16 +417,21 @@ def _post_compile_steps() -> list[_Step]:
             "models",
             _script("install_models.py"),
             1800,
+            not_applicable_exit=MODELS_NOT_APPLICABLE,
         ),
     ]
 
 
 def _run_steps(run_step, log, steps: list[_Step]) -> int:
-    """Run each step in order and count the ones that failed."""
+    """Run each step in order and count the ones that failed; a skipped step did not."""
     failures = 0
     for step in steps:
         log(step.message)
-        failures += int(bool(run_step(step.command, log, step.label, timeout=step.timeout)))
+        options = {}
+        if step.not_applicable_exit is not None:
+            options["not_applicable_exit"] = step.not_applicable_exit
+        status = run_step(step.command, log, step.label, timeout=step.timeout, **options)
+        failures += int(step_failed(status))
     return failures
 
 
@@ -749,10 +764,10 @@ def _require_within_bound(deadline: float | None) -> None:
 
 
 def _fenced_step_runner(fence: threading.Event | None, deadline: float | None = None):
-    def run_step(command, log, name, *, timeout):
+    def run_step(command, log, name, *, timeout, **options):
         _require_fence(fence)
         _require_within_bound(deadline)
-        return _run_step(command, log, name, timeout=timeout)
+        return _run_step(command, log, name, timeout=timeout, **options)
 
     return run_step
 

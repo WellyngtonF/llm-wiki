@@ -1742,10 +1742,11 @@ def test_doctor_reports_missing_pyright(tmp_path, monkeypatch) -> None:
         lambda *a, **k: _missing_pyright_identity(),
     )
     check = doctor._pyright_check(tmp_path, tmp_path, deadline=time.monotonic() + 10)
-    assert check["status"] == "degraded"
+    assert check["status"] == "ok"
     assert check["details"]["status"] == "missing"
     assert check["details"]["codes"] == ["pyright_missing"]
     assert "install_pyright" in check["details"]["recommended_action"]
+    assert "install_pyright" in check["message"]
 
 
 def test_doctor_pyright_passes_deadline_to_repository_scope(tmp_path, monkeypatch) -> None:
@@ -1841,7 +1842,7 @@ def test_doctor_pyright_surfaces_executable_digest_mismatch(tmp_path, monkeypatc
 
     check = doctor._pyright_check(tmp_path, tmp_path, deadline=float("inf"))
 
-    assert check["status"] == "degraded"
+    assert check["status"] == "ok"
     assert check["details"]["codes"] == ["pyright_executable_digest_mismatch"]
     assert check["details"]["executable_sha256"] == "c" * 64
 
@@ -1880,7 +1881,7 @@ def test_doctor_pyright_reports_exact_degradation_codes_and_fields(tmp_path, mon
 
     check = doctor._pyright_check(tmp_path, tmp_path, deadline=time.monotonic() + 10)
 
-    assert check["status"] == "degraded"
+    assert check["status"] == "ok"
     assert check["details"] == {
         "status": "degraded",
         "source": "managed",
@@ -2072,8 +2073,39 @@ def test_doctor_reports_mismatched_pyright(tmp_path, monkeypatch) -> None:
         lambda *a, **k: _mismatched_pyright_identity(),
     )
     check = doctor._pyright_check(tmp_path, tmp_path, deadline=time.monotonic() + 10)
-    assert check["status"] == "degraded"
+    assert check["status"] == "ok"
     assert "pyright_version_mismatch" in check["details"]["codes"]
+    assert "pyright_version_mismatch" in check["message"]
+
+
+def test_an_unverifiable_pyright_is_informational_and_names_its_remedy(
+    tmp_path, monkeypatch
+) -> None:
+    """Stage 0: an optional server that cannot be verified is not a health failure."""
+    from dataclasses import replace
+
+    import doctor
+
+    identity = replace(
+        _qualified_pyright_identity(),
+        status="degraded",
+        source="managed",
+        qualified=False,
+        degradation_codes=("pyright_node_executable_unsafe",),
+    )
+    monkeypatch.setattr(
+        "repository_scope.resolve_repository_scope", lambda root, *, deadline: object()
+    )
+    monkeypatch.setattr("pyright_profile.discover_pyright", lambda *a, **k: identity)
+
+    check = doctor._pyright_check(tmp_path, tmp_path, deadline=time.monotonic() + 10)
+    report = {"overall_status": "degraded", "checks": [check]}
+
+    assert check["status"] == "ok"
+    assert "pyright_node_executable_unsafe" in check["message"]
+    assert "optional" in check["message"]
+    assert check["details"]["recommended_action"] in check["message"]
+    assert doctor.degraded_summary(report) == ""
 
 
 def test_doctor_lsp_check_reports_no_owners_when_absent(tmp_path) -> None:
@@ -4269,6 +4301,81 @@ def test_deferred_writes_are_reported_beside_lost_captures_not_as_them(tmp_path)
     assert check["details"]["deferred"] == 17
     assert "17 write(s) were deferred by a writer race" in check["message"]
     del home
+
+
+def _record_into(state_root: Path, monkeypatch) -> None:
+    """Point the capture diagnostics at a temporary state root, as the hooks write them."""
+    import capture_diagnostics
+    import memory_state
+
+    run = state_root / "run"
+    monkeypatch.setattr(memory_state, "STATE_DIR", run)
+    monkeypatch.setattr(memory_state, "STATE_FILE", run / "state.json")
+    monkeypatch.setattr(memory_state, "LOCK_FILE", run / "state.json.lock")
+    monkeypatch.setattr(
+        capture_diagnostics, "FAILURE_LOG", state_root / "logs" / "capture-failures.jsonl"
+    )
+
+
+def _gate_held(*_args, **_kwargs):
+    raise TimeoutError("timed out waiting for the global Markdown writer gate")
+
+
+def test_a_breadcrumb_that_gave_up_on_the_writer_gate_is_not_a_lost_capture(
+    tmp_path, monkeypatch
+):
+    """Stage 0: the session record keeps the tool call; only its daily-log line was dropped."""
+    import daily_log_append
+    import doctor
+    import post_tool_capture
+    from capture_diagnostics import capture_failure_line
+
+    root, state_root, home = _build_root(tmp_path)
+    _adopt(root, state_root)
+    _record_into(state_root, monkeypatch)
+    monkeypatch.setattr(daily_log_append, "append_daily", _gate_held)
+
+    for target in ("a.py", "b.py"):
+        assert post_tool_capture._append_tool_tag("demo", "session-1", "Edit", target) is False
+
+    check = _check(doctor.run_doctor(root=root, state_root=state_root, home=home), "capture")
+    state = json.loads((state_root / "run" / "state.json").read_text(encoding="utf-8"))
+    trail = (state_root / "logs" / "capture-failures.jsonl").read_text(encoding="utf-8")
+
+    assert check["status"] == "ok"
+    assert check["details"]["lost"] == 0
+    assert check["details"]["dropped"] == 2
+    assert check["message"].startswith("No lost capture is recorded.")
+    assert "2 daily-log breadcrumb(s) were dropped" in check["message"]
+    assert capture_failure_line(state) == ""
+    assert [json.loads(line)["outcome"] for line in trail.splitlines()] == [
+        "dropped",
+        "dropped",
+    ]
+
+
+def test_a_breadcrumb_that_failed_for_another_reason_is_still_a_lost_capture(
+    tmp_path, monkeypatch
+):
+    import daily_log_append
+    import doctor
+    import post_tool_capture
+
+    def disk_full(*_args, **_kwargs):
+        raise OSError("no space left on device")
+
+    root, state_root, home = _build_root(tmp_path)
+    _adopt(root, state_root)
+    _record_into(state_root, monkeypatch)
+    monkeypatch.setattr(daily_log_append, "append_daily", disk_full)
+
+    assert post_tool_capture._append_tool_tag("demo", "session-1", "Edit", "a.py") is False
+
+    check = _check(doctor.run_doctor(root=root, state_root=state_root, home=home), "capture")
+
+    assert check["status"] == "degraded"
+    assert check["details"]["lost"] == 1
+    assert check["details"]["dropped"] == 0
 
 
 def test_the_claim_check_names_the_cause_the_pages_and_the_repair() -> None:

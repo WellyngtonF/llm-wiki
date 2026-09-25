@@ -101,7 +101,6 @@ DEFAULT_TIME_BUDGET_SECONDS = 5.0
 READ_BUSY_MS = 250
 DEFAULT_GENERATION_TIME_BUDGET_SECONDS = 60.0
 DEFAULT_GENERATION_SOURCE_LIMIT = 10_000
-GENERATION_FRESH_SECONDS = 24 * 60 * 60
 # An unregistered, invalid generation directory touched this recently may be a build
 # in flight under another fence; the longest builder bound is 15 minutes. See
 # `docs/research/2026-09-14-a-build-in-flight-is-not-an-orphan.md`; the rule itself is
@@ -3018,8 +3017,8 @@ def _pyright_check(
     details["recommended_action"] = _pyright_recommended_action(codes)
     return _result(
         "pyright",
-        "degraded",
-        _pyright_degraded_message(codes),
+        "ok",
+        _pyright_unverified_message(codes, details["recommended_action"]),
         details,
     )
 
@@ -3030,10 +3029,18 @@ def _extend_unique(codes: list[str], extra) -> None:
             codes.append(code)
 
 
-def _pyright_degraded_message(codes: list[str]) -> str:
+# Pyright is optional code navigation: an unverified server is never launched,
+# and queries answer from structural evidence instead, so an identity that cannot
+# be qualified is information for the operator, not a health failure. The codes
+# and the remedy stay in the message. Doctor running out of time or failing to
+# inspect at all still degrades.
+def _pyright_unverified_message(codes: list[str], action: str) -> str:
     """Name which lookup failed (issue #23): `node_major: null` alone said nothing."""
     named = ", ".join(codes) if codes else "unspecified"
-    return f"Pyright identity is degraded or mismatched: {named}."
+    return (
+        f"Pyright is not verified ({named}); it is optional, and code navigation "
+        f"answers from structural evidence until it is. To enable it: {action}."
+    )
 
 
 def _record_pyright_degradation(identity, details: dict, codes: list[str]) -> None:
@@ -4198,8 +4205,9 @@ def _scope_state(manifest: dict, repository_scope: object) -> str:
     Comparing the whole scope made every commit read as `mismatched`, which
     says the generation belongs to another repository. It does not: only the
     commit moved, and how far behind the generation is already has its own
-    signals. `superseded` is treated exactly like a mismatch by every caller —
-    it only stops the report from saying something untrue.
+    signals. `superseded` is therefore current enough: the refresh reuses a
+    generation across a commit (`_parent_matches_identity`), so degrading on it
+    recommended a refresh that answers `current` and never cleared.
     """
     from repository_scope import same_repository_record
 
@@ -4349,8 +4357,14 @@ def _generation_age(seal: tuple, catalog_info, now: datetime) -> tuple[int, str]
     return max(0, (now_ns - timestamp_ns) // 1_000_000_000), age_source
 
 
+# A scope the refresh would reuse. See `_scope_state`.
+_REUSABLE_SCOPE_STATES = ("current", "superseded")
+
+
 def _identity_stale(facts: _GenerationFacts, complete_v2: bool) -> bool:
-    if facts.scope_state != "current" or facts.corpus_extraction_state != "current":
+    if facts.scope_state not in _REUSABLE_SCOPE_STATES:
+        return True
+    if facts.corpus_extraction_state != "current":
         return True
     return facts.graph_extraction_state != "current" or not complete_v2
 
@@ -4385,8 +4399,15 @@ def _generation_message(degraded: bool, extraction_faults: int) -> str:
     return "Evidence generation is healthy."
 
 
-def _generation_is_stale(facts: _GenerationFacts, age: float, complete_v2: bool) -> bool:
-    if facts.delta or age > GENERATION_FRESH_SECONDS:
+def _generation_is_stale(facts: _GenerationFacts, complete_v2: bool) -> bool:
+    """Stale is what the nightly refresh would rebuild, and nothing else.
+
+    Age is not on that list: a generation with no unindexed source and a current
+    identity is answered `current` by the refresh however old it is, so a day-old
+    limit degraded a quiet vault with a finding no refresh could clear. The age is
+    still reported.
+    """
+    if facts.delta:
         return True
     return _identity_stale(facts, complete_v2)
 
@@ -4402,7 +4423,7 @@ def _generation_health_result(
     age, age_source = _generation_age(seal, catalog_info, now)
     vector_state = str(manifest["vector_state"])
     complete_v2 = manifest.get("schema_version") == "corpus-generation/v2"
-    stale = _generation_is_stale(facts, age, complete_v2)
+    stale = _generation_is_stale(facts, complete_v2)
     # What this status answers is whether the generation is usable and current,
     # so it degrades on the things a refresh fixes. An unresolved reference is
     # what indexing real code looks like — this repository alone has 21199 of
@@ -4678,9 +4699,19 @@ def _deferred_sentence(details: dict) -> str:
     )
 
 
+def _dropped_sentence(details: dict) -> str:
+    dropped = int(details.get("dropped", 0))
+    if not dropped:
+        return ""
+    return (
+        f" {dropped} daily-log breadcrumb(s) were dropped while another writer held"
+        " the Markdown gate; the session record keeps them, so none is counted as lost."
+    )
+
+
 def _capture_loss_result(lost: int, live: bool, details: dict) -> dict:
     """The capture verdict, once the diagnostics themselves have been read."""
-    suffix = _deferred_sentence(details)
+    suffix = _deferred_sentence(details) + _dropped_sentence(details)
     if live:
         return _result("capture", "degraded", f"{lost} capture(s) were lost.{suffix}", details)
     if lost:
@@ -4732,6 +4763,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
     """Report captures the hooks lost, so a silent loss is visible in health."""
     from capture_diagnostics import (
         capture_deferred_totals,
+        capture_dropped_totals,
         capture_failure_is_live,
         capture_failure_totals,
         deferred_compile_pieces,
@@ -4746,6 +4778,7 @@ def _capture_check(root: Path, state_root: Path, deadline: float) -> dict:
         "lost": lost,
         "kinds": totals,
         "deferred": sum(capture_deferred_totals(state).values()),
+        "dropped": sum(capture_dropped_totals(state).values()),
         "trail": "logs/capture-failures.jsonl",
         "state_error": state_error,
         "last_at": last_capture_failure_at(state),

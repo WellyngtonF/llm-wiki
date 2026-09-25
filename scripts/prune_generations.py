@@ -26,7 +26,9 @@ writer has touched for a day is abandoned and removed through
 `discard_unactivated`, and a younger one is left pending. See
 `docs/research/2026-09-14-an-abandoned-publication-is-collected.md`. A code
 generation is never activated by design and is never abandoned: see
-`docs/research/2026-09-15-a-code-generation-is-not-abandoned.md`.
+`docs/research/2026-09-15-a-code-generation-is-not-abandoned.md`. It is named as
+a code generation, not as pending: it waits on no activation, and repository
+retention, which knows its readers, retires it.
 
 Research: `docs/research/2026-08-29-how-many-superseded-generations-to-keep.md`.
 
@@ -73,6 +75,7 @@ class PrunePlan:
         pending: tuple[str, ...],
         abandoned: tuple[str, ...] = (),
         orphans: tuple[str, ...] = (),
+        code: tuple[str, ...] = (),
     ) -> None:
         self.retained = retained
         self.prunable = prunable
@@ -80,6 +83,7 @@ class PrunePlan:
         self.pending = pending
         self.abandoned = abandoned
         self.orphans = orphans
+        self.code = code
 
 
 def _generation_directories(generations_path: Path) -> set[str]:
@@ -133,29 +137,33 @@ def _interrupted_discards(
     return ((registered - on_disk) & activated) - set(retained)
 
 
-def _memory_publications(catalog: GenerationCatalog) -> set[str]:
-    """Registrations whose readable manifest holds no code.
+def _registered_kinds(catalog: GenerationCatalog) -> tuple[set[str], set[str]]:
+    """Registrations whose readable manifest holds no code, and those that hold code.
 
     A code generation is only ever registered, never activated: code answers find
     it through `GenerationCatalog.code_generation_for_repository`, not the
     pointer. Its lifecycle belongs to the collector that knows its readers
     (`repository_retention`, the vault's checkout included since 2026-09-17), so
     it is never an abandoned publication, and neither is a registration whose
-    manifest cannot be read. "Holds code" is the catalog's one predicate, so a
-    generation built before the manifest named its roots is still a code one. See
+    manifest cannot be read, which is in neither set. "Holds code" is the
+    catalog's one predicate, so a generation built before the manifest named its
+    roots is still a code one. See
     `docs/research/2026-09-15-a-code-generation-is-not-abandoned.md` and
     `docs/research/2026-09-17-a-question-is-answered-by-its-own-kind-of-generation.md`.
     """
-    return {
-        identifier
-        for identifier, _registered_at, manifest in catalog.registered_manifests()
-        if not catalog.holds_code(identifier, manifest)
-    }
+    memory: set[str] = set()
+    code: set[str] = set()
+    for identifier, _registered_at, manifest in catalog.registered_manifests():
+        (code if catalog.holds_code(identifier, manifest) else memory).add(identifier)
+    return memory, code
 
 
-def _abandoned_publications(catalog: GenerationCatalog, never_activated: set[str]) -> set[str]:
+def _memory_publications(catalog: GenerationCatalog) -> set[str]:
+    return _registered_kinds(catalog)[0]
+
+
+def _abandoned_publications(catalog: GenerationCatalog, memory: set[str]) -> set[str]:
     """Never-activated memory publications no writer has touched for a day."""
-    memory = _memory_publications(catalog) & never_activated
     return {name for name in memory if untouched_for(catalog.generations_path / name, ABANDONED_AFTER_SECONDS)}
 
 
@@ -170,14 +178,17 @@ def plan_prune(
     interrupted = _interrupted_discards(retained, registered, on_disk, activated)
     candidates = _prune_candidates(retained, registered, on_disk)
     never_activated = candidates - activated
-    abandoned = _abandoned_publications(catalog, never_activated)
+    memory, code = _registered_kinds(catalog)
+    abandoned = _abandoned_publications(catalog, memory & never_activated)
+    code &= never_activated
     return PrunePlan(
         retained,
         tuple(sorted((candidates & activated) | interrupted)),
         tuple(sorted(registered - on_disk - interrupted)),
-        tuple(sorted(never_activated - abandoned)),
+        tuple(sorted(never_activated - abandoned - code)),
         tuple(sorted(abandoned)),
         tuple(sorted(on_disk - registered)),
+        tuple(sorted(code)),
     )
 
 
@@ -256,11 +267,15 @@ def _retention_lines(plan: PrunePlan) -> list[str]:
         f"PENDING: {identifier}: registered but never activated"
         for identifier in plan.pending
     ]
+    code = [
+        f"CODE: {identifier}: a repository code generation; repository retention retires it"
+        for identifier in plan.code
+    ]
     orphans = [
         f"ORPHAN: {identifier}: a tree with no registration; the doctor's repair removes it after a day"
         for identifier in plan.orphans
     ]
-    return kept + rootless + unpaired + pending + orphans
+    return kept + rootless + unpaired + pending + code + orphans
 
 
 def _rootless_lines(plan: PrunePlan) -> list[str]:
@@ -295,15 +310,16 @@ def _print_lines(outcomes: list[str]) -> None:
 
 
 def _report(outcomes: list[str]) -> int:
-    """A pending publication or an orphan tree is normal and does not fail the pass;
-    a registration whose tree is missing is a half-finished operation."""
+    """A pending publication, a code generation or an orphan tree is normal and does
+    not fail the pass; a registration whose tree is missing is a half-finished operation."""
     _print_lines(outcomes)
     failures = _count_prefixed(outcomes, "ERROR:")
     unpaired = _count_prefixed(outcomes, "UNPAIRED:")
     pending = _count_prefixed(outcomes, "PENDING:")
+    code = _count_prefixed(outcomes, "CODE:")
     print(
         f"prune_generations: {failures} failed, {unpaired} unpaired, "
-        f"{pending} pending activation"
+        f"{pending} pending activation, {code} code generation(s)"
     )
     return min(1, failures + unpaired)
 

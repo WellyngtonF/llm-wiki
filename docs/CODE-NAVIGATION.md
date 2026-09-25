@@ -361,6 +361,12 @@ Doctor reports stable codes: `pyright_missing`, `pyright_version_mismatch`,
 `pyright_initialization_mismatch`, `pyright_configuration_mismatch`,
 `lsp_owner_live`, `lsp_failure_evidence_retained`, `lsp_state_unreadable`.
 
+Pyright is optional. When its identity cannot be verified, the `pyright` check stays
+`ok` and its message is informational: it names the codes and the one command or
+change that would qualify it. An unverified server is never launched; navigation
+answers from structural evidence. Only a doctor timeout (`pyright_timeout`) or a
+failed inspection (`pyright_unsafe`) degrades the check.
+
 Process scratch lives under `run/lsp/<owner-nonce>/` and follows the existing
 `run/` deletion contract, which protects live LSP owners and retained LSP
 failure evidence for seven days. Doctor never installs or downloads Pyright and

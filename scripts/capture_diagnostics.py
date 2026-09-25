@@ -112,9 +112,22 @@ class DurableWorkExhausted(RuntimeError):
     """
 
 
+# A one-line daily-log breadcrumb whose append gave up at its deadline, because
+# another writer held the Markdown gate the whole time, was dropped rather than
+# lost: the session record written at session end still names the prompt or the
+# tool call. It stays visible, apart from the losses, and never degrades health.
+BREADCRUMB_KINDS = frozenset({"post_tool_append", "user_prompt_append"})
+
+
+def _is_dropped_breadcrumb(error: BaseException | None, kind: str) -> bool:
+    return kind in BREADCRUMB_KINDS and isinstance(error, TimeoutError)
+
+
 def _outcome_of(error: BaseException | None, kind: str = "") -> str:
     if isinstance(error, DurableWorkExhausted):
         return "lost"
+    if _is_dropped_breadcrumb(error, kind):
+        return "dropped"
     return "deferred" if _is_retried_work(error, kind) else "lost"
 
 
@@ -357,12 +370,18 @@ def _bump_counter(state: dict, record: dict[str, str]) -> None:
     if not isinstance(entry, dict):
         entry = {}
     deferred = int(entry.get("deferred", 0)) + int(record["outcome"] == "deferred")
-    counters[record["kind"]] = {
+    dropped = int(entry.get("dropped", 0)) + int(record["outcome"] == "dropped")
+    updated = {
         "count": int(entry.get("count", 0)) + 1,
         "deferred": deferred,
+        "dropped": dropped,
         "last_at": record["at"],
         "last_reason": record["reason"],
     }
+    lost_at = record["at"] if record["outcome"] == "lost" else _loss_moment(entry)
+    if lost_at:
+        updated["last_lost_at"] = lost_at
+    counters[record["kind"]] = updated
     _drop_oldest_kinds(counters)
 
 
@@ -423,22 +442,31 @@ def _counter_entries(state: dict) -> dict[str, dict]:
 
 
 def _lost_count(entry: dict) -> int:
-    return max(int(entry.get("count", 0)) - int(entry.get("deferred", 0)), 0)
+    not_lost = int(entry.get("deferred", 0)) + int(entry.get("dropped", 0))
+    return max(int(entry.get("count", 0)) - not_lost, 0)
 
 
 def capture_failure_totals(state: dict) -> dict[str, int]:
-    """Lost captures per kind: every record minus the ones a writer race deferred."""
+    """Lost captures per kind: every record minus the deferred and the dropped ones."""
     totals = {kind: _lost_count(entry) for kind, entry in _counter_entries(state).items()}
+    return {kind: count for kind, count in totals.items() if count}
+
+
+def _field_totals(state: dict, field: str) -> dict[str, int]:
+    totals = {
+        kind: int(entry.get(field, 0)) for kind, entry in _counter_entries(state).items()
+    }
     return {kind: count for kind, count in totals.items() if count}
 
 
 def capture_deferred_totals(state: dict) -> dict[str, int]:
     """Captures a writer race deferred, per kind: retried, not lost."""
-    totals = {
-        kind: int(entry.get("deferred", 0))
-        for kind, entry in _counter_entries(state).items()
-    }
-    return {kind: count for kind, count in totals.items() if count}
+    return _field_totals(state, "deferred")
+
+
+def capture_dropped_totals(state: dict) -> dict[str, int]:
+    """Breadcrumbs dropped at the writer gate, per kind: the session record keeps them."""
+    return _field_totals(state, "dropped")
 
 
 # A daily-log piece too large for the compile window is not a capture that
@@ -533,6 +561,22 @@ def last_capture_failure_at(state: dict) -> str:
     return max(moments, default="")
 
 
+def _loss_moment(entry: dict) -> str:
+    """When this kind last lost a capture; a drop or a deferral is not one.
+
+    State written before the field existed recorded every outcome in `last_at`.
+    """
+    if not _lost_count(entry):
+        return ""
+    return str(entry.get("last_lost_at") or entry.get("last_at", ""))
+
+
+def last_capture_loss_at(state: dict) -> str:
+    """The most recent moment any kind lost a capture, or an empty string."""
+    moments = [_loss_moment(entry) for entry in _counter_entries(state).values()]
+    return max(moments, default="")
+
+
 def _moment_age_seconds(moment: str, now: datetime) -> float | None:
     try:
         recorded = datetime.fromisoformat(moment)
@@ -556,7 +600,7 @@ def capture_failure_is_live(state: dict, now: datetime | None = None) -> bool:
     """
     if not sum(capture_failure_totals(state).values()):
         return False
-    age = _moment_age_seconds(last_capture_failure_at(state), now or datetime.now())
+    age = _moment_age_seconds(last_capture_loss_at(state), now or datetime.now())
     if age is None:
         return False
     return age <= CAPTURE_RECENT_SECONDS
@@ -574,7 +618,7 @@ def capture_failure_line(state: dict) -> str:
     totals = capture_failure_totals(state)
     lost = sum(totals.values())
     detail = ", ".join(f"{kind} {count}" for kind, count in sorted(totals.items()))
-    last_at = last_capture_failure_at(state)
+    last_at = last_capture_loss_at(state)
     when = f", last at {last_at}" if last_at else ""
     return (
         f"- **Capture**: ⚠️ {lost} capture(s) lost ({detail}{when}) — "
@@ -603,6 +647,8 @@ def _print_summary(state: dict) -> int:
     totals = capture_failure_totals(state)
     for kind, count in sorted(capture_deferred_totals(state).items()):
         print(f"{kind}: {count} deferred by a writer race (retried, not lost)")
+    for kind, count in sorted(capture_dropped_totals(state).items()):
+        print(f"{kind}: {count} breadcrumb(s) dropped at the writer gate (not lost)")
     if not totals:
         print("capture_diagnostics: no capture failures recorded")
         return 0
