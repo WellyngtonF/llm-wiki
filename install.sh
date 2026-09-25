@@ -765,7 +765,7 @@ MODELS_EXIT=0
 uv run --locked --no-sync python "$VAULT_ROOT/scripts/install_models.py" || MODELS_EXIT=$?
 case "$MODELS_EXIT" in
   0) ok "Pinned model weights present" ;;
-  2) info "Semantic search not installed; model weights are fetched once it is" ;;
+  3) info "Semantic search not installed; model weights are fetched once it is" ;;
   *) warn "Model weights incomplete; run: uv run --locked --no-sync python scripts/install_models.py" ;;
 esac
 

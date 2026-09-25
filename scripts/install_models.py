@@ -55,7 +55,10 @@ STATE_FETCHED = "fetched"
 STATE_MISSING = "missing"
 STATE_MISMATCH = "mismatch"
 EXIT_INCOMPLETE = 1
-EXIT_NO_LIBRARY = 2
+# Without the semantic extra there is nothing to fetch: the step does not apply,
+# and the nightly reports it skipped. Not 2, which argparse exits with on a
+# usage error.
+EXIT_NOT_APPLICABLE = 3
 
 
 @dataclass(frozen=True)
@@ -199,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "run `uv sync --extra semantic` first",
             file=sys.stderr,
         )
-        return EXIT_NO_LIBRARY
+        return EXIT_NOT_APPLICABLE
     outcomes = [ensure(model, hub, download=not args.check) for model in pinned_models()]
     _print(outcomes, args.json)
     return _exit_code(outcomes)

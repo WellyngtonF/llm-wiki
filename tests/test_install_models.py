@@ -105,7 +105,7 @@ def test_check_reports_without_downloading(two_models, capsys):
 def test_without_the_library_the_command_says_which_extra_to_install(monkeypatch, capsys):
     monkeypatch.setattr(install_models, "hub_library", lambda: None)
 
-    assert install_models.main([]) == install_models.EXIT_NO_LIBRARY
+    assert install_models.main([]) == install_models.EXIT_NOT_APPLICABLE
     assert "uv sync --extra semantic" in capsys.readouterr().err
 
 

@@ -715,7 +715,9 @@ uv run python scripts/install_models.py --check  # report only
 Each model is fetched at its pinned commit, only the files the loaders read,
 and `model.safetensors` is checked against the size and SHA-256 recorded beside
 the revision; a file that does not match is removed and the command fails.
-Present files are never fetched again. Until the weights are there, `doctor`
+Present files are never fetched again. Without the semantic extra the command
+exits 3 (not applicable), and the nightly pass reports its model step as
+`skipped`, not failed. Until the weights are there, `doctor`
 reports `models: degraded` with that command and search stays lexical.
 A first query in a fresh process loads the model: measured on one host, about
 11 s for a cold CLI query against 4.5 s lexical-only, while the MCP server loads

@@ -164,19 +164,42 @@ def _step_status(returncode: int) -> int:
     return 0 if returncode == 0 else 1
 
 
+# A step that declared it does not apply here, such as an optional feature whose
+# library is not installed. It is reported, and it is not a failure.
+STEP_SKIPPED = 3
+
+
+def step_failed(status: int) -> bool:
+    return status not in (0, STEP_SKIPPED)
+
+
+def _log_step_skipped(log_fn, label: str, out_path: Path, err_path: Path) -> None:
+    reason = redact_secrets(_head_text(err_path)).strip()[:STEP_ERROR_CHARS]
+    log_fn(f"  {label}: skipped — {reason or 'not applicable here'}")
+    log_fn(f"  {label}: full output → {_artifact_note(out_path, err_path)}")
+
+
 def _step_artifacts(label: str) -> tuple[Path, Path]:
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     stem = _artifact_stem(label)
     return ARTIFACT_DIR / f"{stem}.out.log", ARTIFACT_DIR / f"{stem}.err.log"
 
 
-def run_step(cmd: list[str], log_fn, label: str, timeout: int = 600) -> int:
+def run_step(
+    cmd: list[str],
+    log_fn,
+    label: str,
+    timeout: int = 600,
+    *,
+    not_applicable_exit: int | None = None,
+) -> int:
     """Run a subprocess step with timeout protection.
 
-    Returns 0 on success, 1 on non-zero exit, 2 on timeout/error. Any
-    failure (timeout, missing script, OS error) is logged and the next
-    step proceeds — never aborts the scheduled run. Full output stays on
-    disk in an owner-only artifact named by the report line.
+    Returns 0 on success, 1 on non-zero exit, 2 on timeout/error, and
+    `STEP_SKIPPED` when the child exits with the code the caller declared as
+    "not applicable". Any failure (timeout, missing script, OS error) is
+    logged and the next step proceeds — never aborts the scheduled run. Full
+    output stays on disk in an owner-only artifact named by the report line.
     """
     out_path, err_path = _step_artifacts(label)
     try:
@@ -189,6 +212,9 @@ def run_step(cmd: list[str], log_fn, label: str, timeout: int = 600) -> int:
         error = redact_secrets(str(e))
         log_fn(f"  {label}: OS error ({type(e).__name__}: {error}) — skipping, continuing")
         return 2
+    if not_applicable_exit is not None and returncode == not_applicable_exit:
+        _log_step_skipped(log_fn, label, out_path, err_path)
+        return STEP_SKIPPED
     _log_step_output(log_fn, label, out_path, err_path, returncode)
     return _step_status(returncode)
 
