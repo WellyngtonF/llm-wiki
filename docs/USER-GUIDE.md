@@ -310,7 +310,7 @@ END OF SESSION (agent idle or you close)
 
 NIGHTLY 03:00 (scheduler, subject to the operating-system login policy)
   Drain deferred queue → consolidate yesterday's session records into the daily
-  log → compile all pending → structural lint → add owed backlinks → rebuild the
+  log → compile all pending → structural lint → rebuild the
   FTS index → refresh the immutable evidence generation (and its vectors) →
   fetch any missing pinned model weights → compact retrieval telemetry →
   prune old reports → fast-forward the checkout
@@ -422,7 +422,7 @@ the LLM cannot fabricate citations.
 ### Linting and maintenance
 
 ```bash
-uv run python scripts/lint_memory.py --scope all           # 16 structural checks
+uv run python scripts/lint_memory.py --scope all           # 15 structural checks
 uv run python scripts/lint_memory.py --contradictions      # + LLM-judged contradictions
 uv run python scripts/archive_stale.py --apply           # archive old pages by type
 uv run python scripts/lookup_mode.py                       # show direct/base/hybrid mode

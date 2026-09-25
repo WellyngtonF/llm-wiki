@@ -330,7 +330,7 @@ def _promoted_page(candidate: dict, candidate_id: str, page_type: str) -> str:
         f"({_esc(candidate['trigger'])})\n"
         f"- Confidence: {candidate['confidence']}\n\n"
         f"## Related\n"
-        f"- [[knowledge/feedback/{candidate_id}.json]]\n"
+        f"- [[feedback/{candidate_id}.json]]\n"
     )
 
 

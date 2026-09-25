@@ -4,7 +4,7 @@ This index catalogs durable memory distilled from AI agent sessions
 (OpenCode, Codex, Claude Code).
 
 ## Entry points
-- [[docs/operating-model]] — compile cadence, promotion rules, and the daily ↔ notes boundary.
+- `docs/operating-model.md` — compile cadence, promotion rules, and the daily ↔ notes boundary.
 - Recent daily logs live under `knowledge/daily/` — raw, timestamped session captures awaiting compile.
 
 ## Editorial note

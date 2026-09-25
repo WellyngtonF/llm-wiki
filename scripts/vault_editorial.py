@@ -3,8 +3,8 @@
 Multiple scripts need to distinguish **editorial metadata** pages from
 **curated content** pages:
 
-- `lint_memory.py` exempts editorial pages from orphan, sparse, and
-  backlink checks.
+- `lint_memory.py` exempts editorial pages from orphan and sparse
+  checks.
 - `lookup_mode.py` excludes editorial pages from the curated-page
   counter that chooses the retrieval tier.
 
@@ -16,9 +16,6 @@ new scripts a single import point.
 
 `EDITORIAL_NAMES` — filenames whose presence in *any* path under the
 vault marks the page as editorial. Matching is by basename, case-sensitive.
-
-`BACKLINK_EXEMPT_NAMES` — pages that legitimately don't require inbound
-backlinks from their callers (workflows and high-level entry points).
 
 `BROKEN_LINK_SKIP_NAMES` — pages whose prose frequently contains literal
 `[[...]]` that aren't real wikilinks (docs with bracket placeholders,
@@ -36,7 +33,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Pages intentionally exempt from orphan / sparse / backlink checks.
+# Pages intentionally exempt from orphan / sparse checks.
 # Indexes, logs, and human front doors are editorial metadata; project
 # state pages are auto-updated "where we left off" records with the
 # same rationale.
@@ -52,20 +49,6 @@ EDITORIAL_NAMES: frozenset[str] = frozenset({
     # Per-project state pages under `knowledge/projects/<slug>/state.md` are
     # auto-updated by the SessionStart hook. Same rationale as index/log.
     "state.md",
-})
-
-# Pages that point DOWN to concepts but shouldn't impose BACKLINK
-# obligations on everything that links UP to them.
-BACKLINK_EXEMPT_NAMES: frozenset[str] = frozenset({
-    "Ingestion Workflow.md",
-    "Retrieval Workflow.md",
-    "Review Workflow.md",
-    "Vault Home.md",
-    "index.md",
-    "log.md",
-    # Utility synthesis cited by many concepts — would otherwise require
-    # a backlink on every concept page.
-    "Karpathy LLM Wiki Workflow.md",
 })
 
 # Files whose prose frequently contains bracketed literals that look like

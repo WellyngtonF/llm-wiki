@@ -110,21 +110,3 @@ def test_a_published_page_missing_from_the_index_is_still_an_orphan(
 
     findings = lint_memory.check_orphans_against_index([page], _empty_index(tmp_path))
     assert findings and "public-page" in findings[0]
-
-
-def test_no_backlink_is_demanded_that_would_name_a_private_page(
-    tmp_path: Path, notes: Path
-):
-    """The obligation sits on the target, and a published page cannot carry it."""
-    import lint_memory
-
-    _publishing_vault(tmp_path)
-    private = _page(notes, "private-page", "active")
-    public = _page(notes, "public-page", "active")
-    private.write_text(
-        private.read_text(encoding="utf-8")
-        + "\nSee [[knowledge/notes/public-page]].\n",
-        encoding="utf-8",
-    )
-
-    assert lint_memory.check_missing_backlinks([private, public], [notes]) == []
