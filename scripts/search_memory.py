@@ -2978,6 +2978,13 @@ _QUERY_STOPWORDS = frozenset(
         "в", "во", "для", "до", "за", "и", "из", "или", "как", "какой", "когда",
         "мне", "мой", "моя", "на", "не", "о", "от", "по", "при", "с", "у",
         "что", "чтобы", "это", "я",
+        # Portuguese. A question in it shares no content word with an English
+        # note, so without these "de" alone matched every chunk quoting a
+        # Portuguese sentence, and those rows outranked the note the vectors found.
+        "ao", "aos", "à", "às", "com", "como", "da", "das", "de", "dos", "e", "é",
+        "em", "eu", "meu", "minha", "na", "nas", "no", "não", "nos", "o", "os",
+        "ou", "para", "pela", "pelo", "por", "qual", "quando", "que", "se", "um",
+        "uma",
     }
 )
 
@@ -3538,6 +3545,7 @@ def _vector_scored_rows(
         # The vector path boosts a project match by 1.5, not by the lexical 2.0.
         if project and str(result["project"]).casefold() == project.casefold():
             score *= 1.5
+        result["_similarity"] = score
         # Absent provenance weighs 1.0 by `trust_weight`'s own contract, so a row
         # that carries none is admitted on its cosine alone rather than refused.
         score *= trust_weight(result.get("authority"), result.get("type"))
@@ -3632,7 +3640,23 @@ def _generation_vector_rows(
         cancelled=cancelled,
     )
     _check_generation_stop(deadline, cancelled)
-    return results[: limit * 3]
+    return _ranked_by_similarity(results[: limit * 3])
+
+
+def _ranked_by_similarity(admitted: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The admitted rows in the order of their similarity to the question.
+
+    The trust weight decides admission; fusion then multiplies it in once more.
+    Ranked by the weighted score, the lane carried it twice, and cosines of one
+    multilingual model sit so close together that a ×1.69 page ranks first on a
+    cosine 0.06 below the page the question was about: measured on this vault
+    2026-09-25, the gold page of a Portuguese question ranked 1st by cosine and
+    10th in the lane.
+    """
+    admitted.sort(key=lambda item: (-float(item["_similarity"]), str(item["chunk_id"])))
+    for row in admitted:
+        row.pop("_similarity")
+    return admitted
 
 
 def _generation_vectors_search(
