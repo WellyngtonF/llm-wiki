@@ -359,7 +359,8 @@ def test_agent_contract_mentions_three_zone_process_rule():
     )
     template = ROOT / "integrations" / "obsidian" / "Article-to-Inbox.json"
     assert not template.exists(), (
-        "Obsidian is an optional Markdown viewer; do not bundle ingestion wiring"
+        "Obsidian is a reading surface: ship viewer files only, never ingestion "
+        "wiring that makes it required (ADR 0003)"
     )
 
 
