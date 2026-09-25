@@ -2243,10 +2243,10 @@ def test_critique_batches_split_until_each_one_fits(monkeypatch):
     import compile_memory
 
     monkeypatch.setattr(
-        compile_memory, "_critique_prompt", lambda inputs, batch: "x" * len(batch)
+        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None: "x" * len(batch)
     )
     attempt = compile_memory._CompileAttempt.__new__(compile_memory._CompileAttempt)
-    attempt.inputs = None
+    attempt.inputs = compile_memory.CompileInputs((), (), ())
     attempt._fits = lambda prompt, system, schema, descriptor: len(prompt) <= 2
 
     batches = compile_memory._CompileAttempt._critique_batches(
@@ -2261,10 +2261,10 @@ def test_one_operation_that_cannot_be_reviewed_alone_is_refused(monkeypatch):
     import compile_memory
 
     monkeypatch.setattr(
-        compile_memory, "_critique_prompt", lambda inputs, batch: "x" * len(batch)
+        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None: "x" * len(batch)
     )
     attempt = compile_memory._CompileAttempt.__new__(compile_memory._CompileAttempt)
-    attempt.inputs = None
+    attempt.inputs = compile_memory.CompileInputs((), (), ())
     attempt._fits = lambda prompt, system, schema, descriptor: False
 
     with pytest.raises(compile_memory._ProviderStageFailure):

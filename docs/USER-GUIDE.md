@@ -428,6 +428,24 @@ update adds a dated section to the note and never renames it: a slug, once
 written, stays. Each summary is cut to 160 characters in the catalog; the note
 itself is not changed.
 
+Both also read the full text of up to five live notes most similar to the daily
+logs being compiled, without their `## Evidence` and `## Claims` sections. The
+compile asks the active evidence generation once per daily entry (hybrid search,
+dense leg required) and ranks the notes several entries resemble first. The notes
+are taken most similar first while they fit the context window, after the
+daily-log text. The reviewer may answer that an operation is a `duplicate` of a
+named note. The operation is then written as an update of that note. It is dropped
+when the named slug is not a live note, or when the plan already writes that
+note. Both cases are printed on stderr.
+
+Without usable vectors the compile reads the catalog alone. That happens when there
+is no active generation, its `vector_state` is `absent` or `stale`, or the
+embedding model is not installed. The compile prints one line on stderr,
+`compile_memory: similar notes unavailable (<reason>)`, and carries on. Lexical
+matches alone are not used. Loading the model the first time costs a few seconds
+per compile process. After that, each daily entry costs roughly a quarter of a
+second of search.
+
 The links the model proposes for a note, on create and on update, are kept only
 when they name a live note (not superseded or otherwise retired) or a note created
 in the same compile. They are written as bare `[[slug]]`; a path-style
@@ -444,7 +462,8 @@ of your model is, in tokens. The default is `32768`. Set it to the window of
 the model your compile provider uses (for example `MEMORY_CODEX_MODEL`). Each
 run keeps 4,000 tokens for the answer and 1,024 of slack. It then measures the
 fixed prompt: system text, schema, instructions, and the note catalog. What is
-left is the room for daily-log text.
+left is the room for daily-log text. Similar notes take only the room the daily
+logs leave over.
 
 The catalog grows with the vault, by roughly 300 estimated tokens per live
 note. It is never cut to fit: when the catalog and the instructions alone fill
