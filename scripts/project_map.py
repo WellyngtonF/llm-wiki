@@ -35,6 +35,7 @@ from pathlib import Path
 
 MAP_RELATIVE_PATH = "knowledge/projects/project-map.md"
 MAX_MAP_BYTES = 256 * 1024
+# The longest project name kept as a folder-safe slug.
 MAX_NAME_CHARS = 128
 RESERVED_PROJECT_NAMES = frozenset({"general"})
 ACTIONS = ("create", "attach", "detach", "rename", "remove", "list")
