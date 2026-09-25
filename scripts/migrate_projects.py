@@ -10,7 +10,7 @@ operator command, in three steps, turns them into registered projects:
    root and its journal events' worktrees) through repository identity: a subfolder
    or a worktree names its main checkout, and a root that no longer exists or is in
    no git repository names none. It writes two private proposals the owner edits in
-   Obsidian, and writes nothing else:
+   Obsidian, each with `approved: false` in its frontmatter, and writes nothing else:
    - `knowledge/projects/project-map.proposed.md`, in the project map's format: one
      project per main checkout the map does not register yet, named after its folder;
    - `knowledge/projects/note-projects.proposed.md`: one `- <note>: <project>` line
@@ -20,16 +20,31 @@ operator command, in three steps, turns them into registered projects:
      or its breadcrumb's old slug. Without a winner, a project whose name prefixes the
      note's slug is proposed.
 2. Without a flag, a dry run shows the map the proposals produce, KEEP or DELETE for
-   every old folder, the notes that gain `project:`, and the checkpoint queue keys
-   that will be cleared. It writes nothing.
-3. `--apply` requires both proposals and does all of it in one recoverable
-   transaction: registers the proposed repositories (adding to an existing map,
-   never moving what it registers), moves each kept journal to
-   `<project>/<repository>/` with its `state.md` generated again there, deletes every
-   other old folder, writes `project:` onto notes that have none (an existing value is
-   never overwritten), and removes the proposals. `markdown_transaction.py undo <id>`
-   reverts it inside the 2-day undo window; after that the deletion is permanent. A
-   second apply finds nothing to migrate.
+   every old folder, the notes that gain `project:`, the checkpoint queue keys that
+   will be cleared, and which proposal is not approved yet, then the deletion list.
+   It writes nothing.
+3. `--apply` requires both proposals, each carrying `approved: true` (the owner flips
+   it after review). It prints the deletion list first, to stderr with `--json`, then
+   does all of it in one recoverable transaction: registers the proposed
+   repositories (adding to an existing map, never moving what it registers), moves
+   each kept journal to `<project>/<repository>/` with its `state.md` generated again
+   there, deletes every other old folder, writes `project:` onto notes that have none
+   (an existing value is never overwritten), and removes the proposals.
+   `markdown_transaction.py undo <id>` reverts that transaction inside the 2-day undo
+   window (`UNDO_SCOPE` says what it does and does not restore); after that the
+   deletion is permanent. A second apply finds nothing to migrate.
+
+An old folder is any folder of `knowledge/projects/` that is not a registered
+project's, not `general` and not `_template`, and holds a file: a flat journal, only
+a `context.md`, only a `.blackboard/`. Of it, the Markdown files at its top and its
+blackboard streams (`.blackboard/*.jsonl`, append-only coordination records that are
+transaction targets) are deleted in the transaction, and unfinished atomic writes
+after it. A stream is kept while the adopted coordinator reports a live claim for
+the folder's name, since that claim may still append to it, or when the claims
+cannot be read. Anything else (another file type, a nested Markdown file, a link) is
+kept and named in the dry run and the apply report. The emptied directories stay for
+the undo window, because the undo puts files back into the directories they left,
+and are pruned by the next project edit after it.
 
 A journal is named by the key its events carry, and its sequence continues from the
 checkpoints committed under that key (`work_state`), so two journals cannot become
@@ -53,6 +68,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import re
 import sys
 import uuid
@@ -60,8 +76,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from itertools import dropwhile, takewhile
 from pathlib import Path
+from typing import TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from blackboard import STREAM_NAMES as BLACKBOARD_STREAMS  # noqa: E402
+from blackboard import live_claim_projects  # noqa: E402
 from bounded_io import MAX_KNOWLEDGE_PAGE_BYTES, read_stable_bytes  # noqa: E402
 from corpus_snapshot import read_frontmatter  # noqa: E402
 from evidence_resolver import _REF_RE, EvidenceRef, daily_entries  # noqa: E402
@@ -107,6 +126,7 @@ _STATE_REDUCERS = "project_checkpoint_reducers"
 
 MAP_PROPOSAL_HEADER = """---
 type: project-context
+approved: false
 ---
 # Proposed project map
 
@@ -115,12 +135,14 @@ One-sentence summary: The projects `scripts/migrate_projects.py --propose` propo
 The same format as `project-map.md`: each `## <project>` heading names a project and
 each `- <path>` bullet is the main checkout of one of its repositories. Rename a
 project, move a repository under another heading to group it, or delete a bullet to
-leave that repository unregistered. Then run the dry run, and `--apply`. Apply adds
-these to the map; a repository the map already registers stays where it is.
+leave that repository unregistered. Then run the dry run, set `approved: true` above
+once you agree with it, and run `--apply`. Apply adds these to the map; a repository
+the map already registers stays where it is.
 """
 
 NOTES_PROPOSAL_HEADER = """---
 type: project-context
+approved: false
 ---
 # Proposed note projects
 
@@ -129,8 +151,18 @@ One-sentence summary: The project each existing note will carry, proposed by `sc
 Each `- <note>: <project>` line gives that note `project:` in its frontmatter; `-`
 gives it none. Change the project after the colon; the text after the dash is the
 reason and is ignored. A note that already carries a project is listed for reference
-and is never changed.
+and is never changed. Set `approved: true` above once you agree with the list;
+`--apply` refuses until both proposals say so.
 """
+
+UNDO_SCOPE = (
+    "The undo (`markdown_transaction.py undo <id>`, within the 2-day window) restores "
+    "the Markdown files this transaction changed: the project map and the notes, the "
+    "journals and states it moved or deleted, and the proposals, with the blackboard "
+    "streams it deleted. It does not restore the checkpoint queue keys cleared from "
+    "run/state.json, or the non-Markdown leftovers (unfinished atomic writes) removed "
+    "after the transaction. After two days the deletion is permanent."
+)
 
 
 class MigrationRefused(RuntimeError):
@@ -142,6 +174,16 @@ class MigrationRefused(RuntimeError):
 
 @dataclass
 class OldFolder:
+    """One folder of the flat layout, and what in it the migration moves, deletes or keeps.
+
+    `files` (Markdown) and `streams` (blackboard JSONL) are transaction targets, so
+    the undo restores them; `leftovers` are unfinished atomic writes nothing reads,
+    removed after the transaction. `unknown` and `claimed` stay where they are:
+    content the migration does not know, and blackboard streams a live claim, or a
+    claim table that cannot be read, may still need. The last two are relative to
+    the folder.
+    """
+
     name: str
     files: list[str]
     leftovers: list[str]
@@ -149,10 +191,40 @@ class OldFolder:
     events: int
     repository: Path | None = None
     reason: str = ""
+    streams: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
+    claimed: list[str] = field(default_factory=list)
+    claims_unreadable: bool = False
 
     @property
     def relative(self) -> str:
         return f"{PROJECTS}/{self.name}"
+
+    @property
+    def actionable(self) -> bool:
+        return bool(self.files or self.streams or self.leftovers)
+
+    def kept(self) -> list[str]:
+        return sorted([*self.unknown, *self.claimed])
+
+    def kept_reasons(self) -> list[str]:
+        reasons = []
+        if self.unknown:
+            reasons.append(f"kept because it holds {', '.join(self.unknown)}")
+        if self.claimed:
+            why = (
+                "its blackboard claims cannot be read"
+                if self.claims_unreadable
+                else "its blackboard holds a live claim"
+            )
+            reasons.append(f"kept because {why}: {', '.join(self.claimed)}")
+        return reasons
+
+    def hold_streams(self, unreadable: bool) -> None:
+        """A live claim may still append to its streams; they stay until it ends."""
+        self.claimed = sorted(stream.removeprefix(f"{self.relative}/") for stream in self.streams)
+        self.claims_unreadable = unreadable
+        self.streams = []
 
 
 def _read(vault: Path, relative: str) -> bytes:
@@ -234,16 +306,25 @@ def _folder_repository(roots: list[str], resolve: _Resolver) -> tuple[Path | Non
 def old_folders(vault: Path, project_names: set[str], resolve: _Resolver) -> list[OldFolder]:
     """Every folder of the flat layout, with the repository its roots name.
 
-    A folder is of the flat layout when it holds a `journal.md` or a `state.md`
-    itself. In a folder that is also a registered project's, only the journal files
-    are the flat layout's; its other pages belong to the project.
+    The layout the map introduced has only registered projects' folders and the
+    reserved `general`, so any other folder holding a file is of the flat layout,
+    whatever it holds: a journal, only a `context.md`, only a `.blackboard/`. A
+    folder holding no file at all is an empty shell a committed move or delete left
+    for its undo, and is left to be pruned after the undo window. In a registered
+    or reserved project's folder, only the journal files at its top are the flat
+    layout's; everything else there belongs to the project.
     """
     root = vault / PROJECTS
     if not root.is_dir():
         return []
     found = []
     for directory in sorted(root.iterdir(), key=lambda path: path.name):
-        if directory.name == "_template" or directory.is_symlink() or not directory.is_dir():
+        if (
+            directory.name == "_template"
+            or directory.name.startswith(".")
+            or directory.is_symlink()
+            or not directory.is_dir()
+        ):
             continue
         entries = [
             path
@@ -251,9 +332,12 @@ def old_folders(vault: Path, project_names: set[str], resolve: _Resolver) -> lis
             if path.is_file() and not path.is_symlink()
         ]
         names = {path.name for path in entries}
-        if not names & {"journal.md", "state.md"}:
+        owned = directory.name not in project_names | RESERVED_PROJECT_NAMES
+        if not owned and not names & {"journal.md", "state.md"}:
             continue
-        owned = directory.name not in project_names
+        rest = _rest_of_tree(directory) if owned else None
+        if rest is not None and not entries and not any(rest):
+            continue
         files = [
             f"{PROJECTS}/{directory.name}/{path.name}"
             for path in entries
@@ -264,8 +348,51 @@ def old_folders(vault: Path, project_names: set[str], resolve: _Resolver) -> lis
             for path in entries
             if _WRITE_LEFTOVER.match(path.name)
         ]
-        found.append(_described(vault, directory.name, files, leftovers, resolve))
+        folder = _described(vault, directory.name, files, leftovers, resolve)
+        if rest is not None:
+            streams, nested_leftovers, unknown = rest
+            folder.streams = [f"{folder.relative}/{name}" for name in streams]
+            folder.leftovers += [f"{folder.relative}/{name}" for name in nested_leftovers]
+            known = {Path(path).name for path in [*files, *leftovers]}
+            folder.unknown = sorted(
+                [*unknown, *(name for name in names if name not in known)]
+            )
+            if not names & {"journal.md", "state.md"}:
+                folder.reason = "it holds neither a journal nor a state"
+        found.append(folder)
     return found
+
+
+def _rest_of_tree(directory: Path) -> tuple[list[str], list[str], list[str]]:
+    """Below an old folder's top: its blackboard streams, leftovers, and the rest.
+
+    Paths are relative to the folder. Links are not followed and count as unknown.
+    """
+    streams: list[str] = []
+    leftovers: list[str] = []
+    unknown: list[str] = []
+    for current, subdirectories, files in os.walk(directory, followlinks=False):
+        here = Path(current)
+        for name in list(subdirectories):
+            if (here / name).is_symlink():
+                subdirectories.remove(name)
+                unknown.append((here / name).relative_to(directory).as_posix())
+        if here == directory:
+            unknown.extend(name for name in files if (here / name).is_symlink())
+            continue
+        for name in files:
+            relative = (here / name).relative_to(directory).as_posix()
+            if _WRITE_LEFTOVER.match(name) and not (here / name).is_symlink():
+                leftovers.append(relative)
+            elif (
+                here == directory / ".blackboard"
+                and name in BLACKBOARD_STREAMS
+                and not (here / name).is_symlink()
+            ):
+                streams.append(relative)
+            else:
+                unknown.append(relative)
+    return sorted(streams), sorted(leftovers), sorted(unknown)
 
 
 def _described(
@@ -497,7 +624,9 @@ def propose(vault: Path, *, force: bool = False, write: bool = True) -> dict:
         )
     before, current = _current_map(vault)
     resolve = _Resolver(vault)
-    folders = old_folders(vault, set(current.names()), resolve)
+    folders = [
+        folder for folder in old_folders(vault, set(current.names()), resolve) if folder.actionable
+    ]
     report: dict = {"step": "propose", "folders": _folder_rows(folders), "written": []}
     if not folders:
         report["message"] = "nothing to propose: no folder of the flat layout is left"
@@ -558,7 +687,13 @@ class Plan:
     notes_unchanged: list[tuple[str, str]] = field(default_factory=list)
     stale_keys: list[str] = field(default_factory=list)
     proposals: dict[str, bytes] = field(default_factory=dict)
+    not_approved: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+
+
+def _approved(content: bytes) -> bool:
+    """The owner flips `approved: false` to `true` in Obsidian once the review is done."""
+    return read_frontmatter(content).mapping.get("approved") is True
 
 
 def _parsed_notes_proposal(text: str) -> tuple[dict[str, str | None], list[str]]:
@@ -685,6 +820,16 @@ def _is_live_key(key: str, vault: Path, final: ProjectMap, moved: set[str]) -> b
     return False
 
 
+def _hold_claimed_streams(vault: Path, state_root: Path, folders: list[OldFolder]) -> None:
+    """Keep the blackboard streams a live claim may still append to, or that no one can vouch for."""
+    if not any(folder.streams for folder in folders):
+        return
+    claimed = live_claim_projects(vault, state_root)
+    for folder in folders:
+        if folder.streams and (claimed is None or folder.name in claimed):
+            folder.hold_streams(unreadable=claimed is None)
+
+
 def plan_migration(vault: Path, state_root: Path) -> Plan:
     """What `--apply` would do with the proposals as they are now."""
     plan = Plan()
@@ -700,6 +845,7 @@ def plan_migration(vault: Path, state_root: Path) -> Plan:
         plan.problems.append(f"missing {', '.join(missing)}: run --propose first")
         return plan
     plan.proposals = {MAP_PROPOSAL: map_proposal, NOTES_PROPOSAL: notes_proposal}
+    plan.not_approved = [path for path, content in plan.proposals.items() if not _approved(content)]
     proposal_text = map_proposal.decode("utf-8-sig")
     plan.problems.extend(
         f"{MAP_PROPOSAL}:{problem.line}: {problem.message}"
@@ -719,6 +865,7 @@ def plan_migration(vault: Path, state_root: Path) -> Plan:
     if plan.map_after == plan.map_before or not plan.added:
         plan.map_after = plan.map_before
     folders = old_folders(vault, set(plan.final.names()), _Resolver(vault))
+    _hold_claimed_streams(vault, state_root, folders)
     _plan_folders(vault, plan, folders)
     _plan_notes(vault, plan, notes_proposal.decode("utf-8-sig"))
     moved = {folder.key for folder, _placement in plan.keeps if folder.key}
@@ -762,14 +909,14 @@ def _changes(vault: Path, plan: Plan) -> tuple[dict[Path, bytes | None], dict[st
     destinations = []
     for folder, placement in plan.keeps:
         destinations.append(f"{PROJECTS}/{placement.relative}")
-        for source in folder.files:
+        for source in [*folder.files, *folder.streams]:
             remove(source, _read(vault, source))
         for target, content in _moved_files(vault, folder, placement).items():
             existing = _read_optional(vault, target)
             changes[vault / target] = content
             preconditions[target] = ABSENT if existing is None else sha256_bytes(existing)
     for folder, _reason in plan.deletes:
-        for source in folder.files:
+        for source in [*folder.files, *folder.streams]:
             remove(source, _read(vault, source))
     for note, project in plan.notes:
         changes[vault / note.relative] = _with_project(note.content, project)
@@ -884,16 +1031,27 @@ def _plan_payload(plan: Plan) -> dict:
                 "folder": folder.name,
                 "to": f"{PROJECTS}/{placement.relative}",
                 "events": folder.events,
+                "kept": folder.kept(),
+                "kept_reasons": folder.kept_reasons(),
             }
             for folder, placement in plan.keeps
         ],
         "delete": [
-            {"folder": folder.name, "events": folder.events, "reason": reason}
+            {
+                "folder": folder.name,
+                "path": f"{folder.relative}/",
+                "events": folder.events,
+                "reason": reason,
+                "kept": folder.kept(),
+                "kept_reasons": folder.kept_reasons(),
+            }
             for folder, reason in plan.deletes
         ],
         "notes": [{"note": note.slug, "project": project} for note, project in plan.notes],
         "notes_unchanged": [{"note": slug, "reason": why} for slug, why in plan.notes_unchanged],
         "checkpoint_keys_to_clear": plan.stale_keys,
+        "not_approved": plan.not_approved,
+        "undo": UNDO_SCOPE,
         "problems": plan.problems,
     }
 
@@ -915,8 +1073,12 @@ def _print_plan(payload: dict) -> None:
     print(f"Old project folders: {len(payload['keep'])} kept, {len(payload['delete'])} deleted")
     for item in payload["keep"]:
         print(f"  KEEP    {item['folder']} -> {item['to']}/ ({item['events']} events)")
+        for reason in item["kept_reasons"]:
+            print(f"          {PROJECTS}/{item['folder']}/ {reason}")
     for item in payload["delete"]:
         print(f"  DELETE  {item['folder']} ({item['events']} events): {item['reason']}")
+        for reason in item["kept_reasons"]:
+            print(f"          {reason}")
     print(f"Notes that get a project: {len(payload['notes'])}")
     for item in payload["notes"]:
         print(f"  {item['note']}: {item['project']}")
@@ -925,17 +1087,26 @@ def _print_plan(payload: dict) -> None:
     if payload["checkpoint_keys_to_clear"]:
         keys = ", ".join(payload["checkpoint_keys_to_clear"])
         print(f"Checkpoint queue keys to clear in run/state.json: {keys}")
+    for path in payload["not_approved"]:
+        print(f"not approved: {path}")
     for problem in payload["problems"]:
         print(f"PROBLEM: {problem}")
 
 
-def _print_deletions(payload: dict) -> None:
+def _print_deletions(payload: dict, stream: TextIO | None = None) -> None:
+    stream = sys.stdout if stream is None else stream
     print(
-        f"These {len(payload['delete'])} folders will be deleted. The transaction can be undone "
-        "for two days; after that the deletion is permanent:"
+        f"These {len(payload['delete'])} folders will be deleted in one transaction:",
+        file=stream,
     )
     for item in payload["delete"]:
-        print(f"  {PROJECTS}/{item['folder']}/")
+        reasons = "".join(f" ({reason})" for reason in item["kept_reasons"])
+        print(f"  {item['path']}{reasons}", file=stream)
+    kept = [item for item in payload["keep"] if item["kept_reasons"]]
+    for item in kept:
+        for reason in item["kept_reasons"]:
+            print(f"  {PROJECTS}/{item['folder']}/ is moved; {reason}", file=stream)
+    print(payload["undo"], file=stream)
 
 
 def _print_proposal(report: dict) -> None:
@@ -956,7 +1127,10 @@ def _print_proposal(report: dict) -> None:
     for path in report["written"]:
         print(f"wrote {path}")
     if report["written"]:
-        print("Edit both files, then run the dry run (no flag) and --apply.")
+        print(
+            "Edit both files, run the dry run (no flag), set `approved: true` in each, "
+            "then --apply."
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -987,9 +1161,9 @@ def _run_propose(vault: Path, arguments: argparse.Namespace) -> int:
 
 
 def _nothing_left(vault: Path) -> bool:
-    """No flat-layout folder is left: the migration already happened."""
+    """No flat-layout folder holds anything to move or delete: the migration happened."""
     names = set(_current_map(vault)[1].names())
-    return not old_folders(vault, names, _Resolver(vault))
+    return not any(folder.actionable for folder in old_folders(vault, names, _Resolver(vault)))
 
 
 def _run_plan(vault: Path, state_root: Path, arguments: argparse.Namespace) -> int:
@@ -1012,15 +1186,21 @@ def _run_plan(vault: Path, state_root: Path, arguments: argparse.Namespace) -> i
         else:
             print("nothing was written: fix the problems above first")
         return 1
+    _print_deletions(payload, sys.stderr if arguments.json else sys.stdout)
     if not arguments.apply:
         if arguments.json:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
         else:
-            _print_deletions(payload)
+            if plan.not_approved:
+                print(_APPROVAL_NEEDED)
             print("dry run: nothing was written; rerun with --apply to write")
         return 0
-    if not arguments.json:
-        _print_deletions(payload)
+    if plan.not_approved:
+        if arguments.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print(f"nothing was written: {_APPROVAL_NEEDED}")
+        return 1
     try:
         payload.update(apply_migration(vault, state_root, plan), applied=True)
     except (OSError, RuntimeError, ValueError) as error:
@@ -1031,8 +1211,17 @@ def _run_plan(vault: Path, state_root: Path, arguments: argparse.Namespace) -> i
         print(f"transaction: {payload['transaction_id']}")
         print(f"undo within two days: uv run python scripts/markdown_transaction.py undo {payload['transaction_id']}")
         if payload["keys_cleared"]:
-            print(f"cleared checkpoint queue keys: {', '.join(payload['keys_cleared'])}")
+            print(
+                f"cleared checkpoint queue keys: {', '.join(payload['keys_cleared'])} "
+                "(an undo does not bring them back)"
+            )
     return 0
+
+
+_APPROVAL_NEEDED = (
+    "--apply needs both proposals approved: review them, then set `approved: true` "
+    "in the frontmatter of each one listed as not approved"
+)
 
 
 def _report(arguments: argparse.Namespace, payload: dict, status: int) -> int:

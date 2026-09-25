@@ -536,7 +536,8 @@ uv run --locked --no-sync python scripts/migrate_projects.py --apply     # 3. ap
 1. `--propose` resolves the roots each old folder recorded to their repository's
    main checkout (a subfolder or a worktree names its repository; a root that no
    longer exists or is in no git repository names none) and writes two private files
-   for you to edit in Obsidian:
+   for you to edit in Obsidian, each starting with `approved: false` in its
+   frontmatter:
    - `knowledge/projects/project-map.proposed.md`, in the project map's format: one
      project per repository the map does not register yet, named after its folder.
      Rename a project, move a bullet under another heading to group repositories
@@ -550,18 +551,38 @@ uv run --locked --no-sync python scripts/migrate_projects.py --apply     # 3. ap
 
    It refuses to replace proposals that already exist; `--force` proposes again.
 2. The dry run shows the map that will be written, `KEEP` or `DELETE` with the
-   reason for every old folder, the notes that get `project:`, and the checkpoint
-   queue keys it will clear from `run/state.json`, then lists the folders to be
-   deleted. It writes nothing.
-3. `--apply` requires both proposals. It prints the deletion list again, then in one
-   transaction adds the proposed repositories to the map (a repository the map
-   already registers stays where it is), moves each kept journal to
-   `knowledge/projects/<project>/<repository>/` with its `state.md` generated again,
-   deletes every other old folder, writes `project:` onto the assigned notes that
-   have none, and removes the two proposals. It prints the transaction id:
-   `uv run --locked --no-sync python scripts/markdown_transaction.py undo <id>`
-   reverts all of it within the 2-day undo window; after that the deletion is
-   permanent. Running it again finds nothing to migrate.
+   reason for every old folder, the notes that get `project:`, the checkpoint queue
+   keys it will clear from `run/state.json`, and any proposal not approved yet, then
+   lists the folders to be deleted. It writes nothing. When you agree with a
+   proposal, change its `approved: false` to `approved: true` in Obsidian.
+3. `--apply` requires both proposals, and refuses, writing nothing, until both say
+   `approved: true`. It prints the deletion list again (to stderr with `--json`,
+   which also carries it in the report), then in one transaction adds the proposed
+   repositories to the map (a repository the map already registers stays where it
+   is), moves each kept journal to `knowledge/projects/<project>/<repository>/` with
+   its `state.md` generated again, deletes every other old folder, writes `project:`
+   onto the assigned notes that have none, and removes the two proposals. It prints
+   the transaction id: `uv run --locked --no-sync python
+   scripts/markdown_transaction.py undo <id>` within the 2-day undo window restores
+   the Markdown files it changed (the project map, the notes, the moved and deleted
+   journals and states, the proposals) and the blackboard streams it deleted. It
+   does not restore the checkpoint queue keys cleared from `run/state.json`, or the
+   non-Markdown leftovers (unfinished atomic writes) removed after the transaction.
+   After two days the deletion is permanent. Running it again finds nothing to
+   migrate.
+
+An old folder is any folder under `knowledge/projects/` that is not a registered
+project's, not `general` and not `_template`, and holds at least one file, whatever
+it holds: a flat journal, only a `context.md`, or only a `.blackboard/` (the
+append-only coordination streams `scripts/blackboard.py` writes). Apply deletes its
+Markdown files and its blackboard streams in the transaction, and its unfinished
+atomic writes after it. A blackboard whose project still holds a live claim, or
+whose claims cannot be read, is kept, because that claim may still write to it.
+Anything else the migration does not know, such as another kind of file, a Markdown
+file in a subfolder or a link, is kept too, and the dry run and the apply report
+name it: "kept because it holds `<files>`". The emptied directories themselves stay
+for the two-day undo window, because an undo puts files back into the directories
+they left, and the next project edit after that removes them.
 
 When several old folders name one repository, the one with the most events moves
 and the others are deleted: a journal is named by the key its events carry and its

@@ -236,15 +236,22 @@ def _propose(world: dict) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def _approve(world: dict) -> None:
-    """The owner renames one project and keeps everything else as proposed."""
+def _approved(text: str) -> str:
+    """What the owner does in Obsidian once the review is done."""
+    assert "\napproved: false\n" in text
+    return text.replace("\napproved: false\n", "\napproved: true\n", 1)
+
+
+def _approve(world: dict, *, notes_too: bool = True) -> None:
+    """The owner renames one project, keeps everything else as proposed, and approves."""
     vault = world["vault"]
     proposal = (vault / MAP_PROPOSAL).read_text(encoding="utf-8")
-    (vault / MAP_PROPOSAL).write_text(proposal.replace("## beta", "## product-b"), encoding="utf-8")
-    notes = (vault / NOTES_PROPOSAL).read_text(encoding="utf-8")
-    (vault / NOTES_PROPOSAL).write_text(
-        notes.replace("- deploy-order: beta", "- deploy-order: product-b"), encoding="utf-8"
+    (vault / MAP_PROPOSAL).write_text(
+        _approved(proposal.replace("## beta", "## product-b")), encoding="utf-8"
     )
+    notes = (vault / NOTES_PROPOSAL).read_text(encoding="utf-8")
+    notes = notes.replace("- deploy-order: beta", "- deploy-order: product-b")
+    (vault / NOTES_PROPOSAL).write_text(_approved(notes) if notes_too else notes, encoding="utf-8")
 
 
 def test_propose_groups_folders_by_repository_and_proposes_note_projects(world):
@@ -404,3 +411,163 @@ def test_the_moved_journal_keeps_its_sequence_for_a_worktree_of_its_repository(w
     journal = (vault / PROJECTS / "alpha/alpha/journal.md").read_text(encoding="utf-8")
     sequences = [json.loads(line)["sequence"] for line in journal.splitlines() if line.startswith("{")]
     assert sequences == [1, 2, 3, 4]
+
+
+def test_apply_needs_both_proposals_approved_and_writes_nothing_until_then(world):
+    vault = world["vault"]
+    _propose(world)
+    for proposal in (MAP_PROPOSAL, NOTES_PROPOSAL):
+        assert "\napproved: false\n" in (vault / proposal).read_text(encoding="utf-8")
+    _approve(world, notes_too=False)
+    before = _snapshot(world)
+
+    dry = _migrate(world)
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert f"not approved: {NOTES_PROPOSAL.as_posix()}" in dry.stdout
+    assert _snapshot(world) == before
+
+    refused = _migrate(world, "--apply")
+
+    assert refused.returncode == 1
+    assert f"not approved: {NOTES_PROPOSAL.as_posix()}" in refused.stdout
+    assert "set `approved: true`" in refused.stdout
+    assert _snapshot(world) == before
+
+    refused_json = _migrate(world, "--apply", "--json")
+
+    assert refused_json.returncode == 1
+    assert json.loads(refused_json.stdout)["not_approved"] == [NOTES_PROPOSAL.as_posix()]
+    assert _snapshot(world) == before
+
+
+JUNK = ("alpha-feature", "gone", "home", "scratch", "web")
+
+
+def test_a_json_apply_shows_the_deletions_first_and_says_what_undo_restores(world):
+    _propose(world)
+    _approve(world)
+
+    dry = _migrate(world, "--json")
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    planned = json.loads(dry.stdout)
+    assert [item["path"] for item in planned["delete"]] == [
+        f"knowledge/projects/{name}/" for name in JUNK
+    ]
+    assert "  knowledge/projects/scratch/" in dry.stderr
+
+    result = _migrate(world, "--apply", "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr.startswith("These 5 folders will be deleted")
+    for name in JUNK:
+        assert f"  knowledge/projects/{name}/" in result.stderr
+    report = json.loads(result.stdout)
+    assert len(report["delete"]) == 5
+    assert "restores the Markdown files" in report["undo"]
+    assert "does not restore" in report["undo"]
+    assert "run/state.json" in report["undo"]
+
+
+def test_apply_says_what_undo_restores_and_what_it_does_not(world):
+    _propose(world)
+    _approve(world)
+
+    result = _migrate(world, "--apply")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert out.index("These 5 folders will be deleted") < out.index("transaction: ")
+    assert "restores the Markdown files" in out
+    assert "the project map and the notes" in out
+    assert "does not restore the checkpoint queue keys cleared from run/state.json" in out
+    assert "non-Markdown leftovers" in out
+
+
+def test_a_deleted_folder_is_gone_unless_it_holds_what_the_migration_does_not_know(world):
+    vault = world["vault"]
+    projects = vault / PROJECTS
+    (projects / "notes-only").mkdir()
+    (projects / "notes-only" / "context.md").write_text("# old context\n", encoding="utf-8")
+    board = projects / "board-only" / ".blackboard"
+    board.mkdir(parents=True)
+    streams = {
+        "tasks.jsonl": b'{"id":"t1","status":"claimed"}\n',
+        "signals.jsonl": b'{"from":"a","to":"b"}\n',
+    }
+    for name, content in streams.items():
+        (board / name).write_bytes(content)
+    (board / f".tasks.jsonl.{'c' * 32}.tmp").write_text("half", encoding="utf-8")
+    (projects / "scratch" / ".blackboard").mkdir()
+    (projects / "scratch" / ".blackboard" / "conflicts.jsonl").write_bytes(b"{}\n")
+    (projects / "scratch" / "sketch.png").write_bytes(b"\x89PNG")
+    (projects / "scratch" / "drafts").mkdir()
+    (projects / "scratch" / "drafts" / "idea.md").write_text("# idea\n", encoding="utf-8")
+    (projects / "empty-shell").mkdir()
+    _propose(world)
+    _approve(world)
+    before = _snapshot(world, markdown_only=True)
+
+    dry = _migrate(world)
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    out = dry.stdout
+    assert "DELETE  notes-only (0 events): it holds neither a journal nor a state" in out
+    assert "DELETE  board-only (0 events): it holds neither a journal nor a state" in out
+    assert "empty-shell" not in out
+    assert "kept because it holds drafts/idea.md, sketch.png" in out
+    assert "These 7 folders will be deleted" in out
+
+    result = _migrate(world, "--apply", "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    scratch = next(item for item in report["delete"] if item["folder"] == "scratch")
+    assert scratch["kept"] == ["drafts/idea.md", "sketch.png"]
+    assert "kept because it holds drafts/idea.md, sketch.png" in result.stderr
+    old = ("notes-only", "board-only", "scratch")
+    remaining = sorted(
+        path.relative_to(projects).as_posix()
+        for path in projects.rglob("*")
+        if path.is_file() and path.relative_to(projects).parts[0] in old
+    )
+    assert remaining == ["scratch/drafts/idea.md", "scratch/sketch.png"]
+
+    undo = _run(world, str(SCRIPTS / "markdown_transaction.py"), "undo", report["transaction_id"])
+
+    assert undo.returncode == 0, undo.stdout + undo.stderr
+    assert _snapshot(world, markdown_only=True) == before
+    assert {name: (board / name).read_bytes() for name in streams} == streams
+    assert (projects / "scratch" / ".blackboard" / "conflicts.jsonl").read_bytes() == b"{}\n"
+    assert not (board / f".tasks.jsonl.{'c' * 32}.tmp").exists()
+
+
+def test_a_blackboard_holding_a_live_claim_is_kept_and_named(tmp_path, monkeypatch):
+    import blackboard
+    from test_reliability_v3_adoption import _vault, build_adopted_reliability_v3
+
+    vault, state_root = _vault(tmp_path)
+    build_adopted_reliability_v3(vault, state_root)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(blackboard, "PROJECTS_DIR", vault / PROJECTS)
+    monkeypatch.setenv("LLM_WIKI_ROOT", str(vault))
+    monkeypatch.setenv("LLM_WIKI_STATE_ROOT", str(state_root))
+    blackboard.claim_task("busy", "edit the parser", "agent-a", resources=["src/parser.py"], ttl_seconds=3600)
+    blackboard.send_signal("idle", "agent-a", "agent-b", "the parser is done")
+    world = {"vault": vault, "state_root": state_root, "home": home}
+    _propose(world)
+    _approve(world)
+
+    dry = _migrate(world)
+
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "DELETE  busy (0 events): it holds neither a journal nor a state" in dry.stdout
+    assert "kept because its blackboard holds a live claim: .blackboard/tasks.jsonl" in dry.stdout
+
+    result = _migrate(world, "--apply")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (vault / PROJECTS / "busy" / ".blackboard" / "tasks.jsonl").is_file()
+    assert not (vault / PROJECTS / "idle" / ".blackboard" / "signals.jsonl").exists()

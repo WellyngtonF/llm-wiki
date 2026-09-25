@@ -59,6 +59,8 @@ from reliable_memory import begin_immediate  # noqa: E402
 from secret_redact import redact_secrets  # noqa: E402
 
 PROJECTS_DIR = ROOT / "knowledge" / "projects"
+# The append-only streams under `knowledge/projects/<project>/.blackboard/`.
+STREAM_NAMES = ("tasks.jsonl", "completed.jsonl", "signals.jsonl", "conflicts.jsonl")
 _MAX_RESOURCES = 64
 _MAX_RESOURCE_BYTES = 512
 _MAX_TASK_BYTES = 4096
@@ -157,6 +159,28 @@ def _sanitize_project(project: str) -> str:
     if not slug or slug in {".", ".."}:
         raise ValueError(f"invalid project slug: {project!r}")
     return slug
+
+
+def live_claim_projects(
+    vault: Path, state_root: Path, *, now: datetime | None = None
+) -> frozenset[str] | None:
+    """The projects holding an unexpired resource claim, or None when that cannot be read.
+
+    Claims live only in the adopted coordinator-v3 database, so a runtime without
+    that database holds none.
+    """
+    if not (Path(state_root) / "run" / "markdown-transactions-v3.sqlite3").exists():
+        return frozenset()
+    try:
+        coordinator = active_markdown_coordinator(Path(vault), Path(state_root))
+        with coordinator._connect() as database:
+            rows = database.execute(
+                "SELECT DISTINCT project FROM blackboard_claims WHERE expires_at>?",
+                (_timestamp(_utc_now(now)),),
+            ).fetchall()
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+        return None
+    return frozenset(str(row[0]) for row in rows)
 
 
 def _bb_dir(project: str) -> Path:

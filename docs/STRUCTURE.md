@@ -635,7 +635,11 @@ or nonzero active state remains fail-closed.
   read by nothing. The one-off `scripts/migrate_projects.py` moves the journals of
   real repositories under their project from owner-approved proposals
   (`knowledge/projects/project-map.proposed.md`, `note-projects.proposed.md`, removed
-  on apply) and deletes the other folders, in one undoable transaction.
+  on apply, each applied only once its frontmatter says `approved: true`) and
+  deletes the other folders, in one undoable transaction. Any unregistered folder
+  there holding a file counts as old, including one holding only a `context.md` or a
+  `.blackboard/`; its Markdown and blackboard streams are deleted unless a live
+  blackboard claim holds them, and anything else is kept and reported.
 - Daily-log entries name the registered work they came from: a prompt or tool
   breadcrumb carries `<project>/<repository>` in its tag (`-` for unregistered
   work), and a session-end entry or capture block carries ``- Project: `<project>` ``
