@@ -1,7 +1,9 @@
-"""Regenerate `knowledge/index.md` from `knowledge/notes/**/*.md`.
+"""Regenerate `knowledge/index.md` from `knowledge/notes/**/*.md`, and the project pages.
 
 Supports both flat notes (current public layout) and typed subdirs
-(concepts/decisions/patterns/debugging/qa) when present.
+(concepts/decisions/patterns/debugging/qa) when present. The project pages
+(`project_pages`) are private and derived from the same notes, so they are
+regenerated in the same transaction; the tracked index never names them.
 """
 from __future__ import annotations
 
@@ -22,7 +24,9 @@ from markdown_transaction import (  # noqa: E402
 )
 from memory_state import ROOT  # noqa: E402
 from page_status import is_retired  # noqa: E402
-from reliable_memory import sha256_bytes  # noqa: E402
+from project_map import MAP_RELATIVE_PATH  # noqa: E402
+from project_pages import page_writes  # noqa: E402
+from reliable_memory import canonical_json_bytes, sha256_bytes  # noqa: E402
 
 memory = ROOT / "knowledge"
 knowledge = memory / "notes"
@@ -312,10 +316,10 @@ def main() -> int:
         if plan is None:
             print("rebuild_memory_index: knowledge/index.md is current")
             return 0
-        operation_id, content, preconditions = plan
+        operation_id, changes, preconditions = plan
         try:
-            mutate_knowledge(operation_id, {out: content}, preconditions=preconditions)
-            print(f"rebuild_memory_index: knowledge/index.md rebuilt ({len(content)} bytes)")
+            mutate_knowledge(operation_id, changes, preconditions=preconditions)
+            _report(changes)
             return 0
         except TransactionDriftError as exc:
             repair_lineage = exc.transaction_id
@@ -324,10 +328,19 @@ def main() -> int:
     raise RuntimeError("knowledge index rebuild did not converge")
 
 
+def _report(changes: Mapping[Path, bytes | None]) -> None:
+    for path, content in changes.items():
+        relative = Path(path).relative_to(ROOT).as_posix()
+        if content is None:
+            print(f"rebuild_memory_index: {relative} removed")
+        else:
+            print(f"rebuild_memory_index: {relative} rebuilt ({len(content)} bytes)")
+
+
 def _rebuild_plan(
     repair_lineage: str,
-) -> tuple[str, bytes, dict[str, object]] | None:
-    """The write to make, or None when the index already matches the vault."""
+) -> tuple[str, dict[Path, bytes | None], dict[str, object]] | None:
+    """The writes to make, or None when the index and project pages match the vault."""
     manifest, tree = snapshot_claim_tree_with_content(ROOT)
     notes = {
         path: content
@@ -336,19 +349,42 @@ def _rebuild_plan(
     }
     content = build_index_bytes(ROOT, base=notes)
     before_bytes, before_hash = _current_index()
-    if before_bytes == content:
+    changes: dict[Path, bytes | None] = {}
+    if before_bytes != content:
+        changes[out] = content
+    preconditions: dict[str, object] = {
+        "claim_tree_manifest": manifest,
+        out.relative_to(ROOT).as_posix(): before_hash,
+    }
+    pages = page_writes(ROOT, notes=notes)
+    for page in pages:
+        changes[ROOT / page.path] = page.content
+        preconditions[page.path] = page.before
+    if pages:
+        preconditions[MAP_RELATIVE_PATH] = _current_hash(ROOT / MAP_RELATIVE_PATH)
+    if not changes:
         return None
     generation = str(manifest["absence_generation"])
+    written = canonical_json_bytes(
+        {
+            Path(path).relative_to(ROOT).as_posix(): None if data is None else sha256_bytes(data)
+            for path, data in changes.items()
+        }
+    )
     return (
         stable_operation_id(
-            "rebuild-index", f"{generation}:{before_hash}:{repair_lineage}", content
+            "rebuild-index", f"{generation}:{before_hash}:{repair_lineage}", written
         ),
-        content,
-        {
-            "claim_tree_manifest": manifest,
-            out.relative_to(ROOT).as_posix(): before_hash,
-        },
+        changes,
+        preconditions,
     )
+
+
+def _current_hash(path: Path) -> str:
+    try:
+        return sha256_bytes(read_stable_bytes(path, MAX_PAGE_BYTES, label="project map"))
+    except FileNotFoundError:
+        return ABSENT
 
 
 def _current_index() -> tuple[bytes | None, str]:

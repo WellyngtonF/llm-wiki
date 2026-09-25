@@ -6,9 +6,9 @@ user systemd timer on Linux, cron as the explicit degraded fallback
 runtime reclaim, the deferred memory queue, yesterday's session
 consolidation; the compile (spawned through `maybe_compile`, followed until
 it finishes or the wait bound passes) and user-turn keying; then the steps
-that read the compile's output — orphaned-checkpoint clearing, structural
-lint, the FTS5 index, registered-repository refresh,
-generation pruning, model weights, the bounded generation refresh —
+that read the compile's output — the note index and project pages,
+orphaned-checkpoint clearing, structural lint, the FTS5 index,
+registered-repository refresh, generation pruning, model weights, the bounded generation refresh —
 telemetry compaction, the health report, report pruning and the bounded
 fast-forward of the checkout. Never requires user interaction. All output
 goes to $LLM_WIKI_STATE_ROOT/logs/nightly-YYYY-MM-DD.md.
@@ -339,8 +339,25 @@ def _lsp_evidence_step() -> _Step:
     )
 
 
+def _pages_step() -> _Step:
+    """Regenerate the note index and the project pages, whatever the compile did.
+
+    A project page also shows each repository's work state, which lifecycle events
+    change all day without a compile, and a note edited by hand changes no index
+    until something rebuilds it. The rebuild writes nothing when every page is
+    current.
+    """
+    return _Step(
+        "Step 3a: regenerating the note index and project pages...",
+        "pages",
+        _script("rebuild_memory_index.py"),
+        120,
+    )
+
+
 def _post_compile_steps() -> list[_Step]:
     return [
+        _pages_step(),
         _Step(
             "Step 3: structural lint...",
             "lint",

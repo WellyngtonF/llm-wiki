@@ -8,8 +8,9 @@ directory that belongs to no registered repository gets nothing here. Structure:
 knowledge/projects/
   project-map.md                   ← your projects and the repositories each is made of
   _template/state.md               ← skeleton for a repository's first state page
+  general/index.md                 ← generated page: notes of no registered project
   <project>/                       ← one folder per registered project
-    index.md                       ← generated project page (reserved)
+    index.md                       ← generated project page; do not edit
     <repository>/journal.md        ← append-only record of what agents did there
     <repository>/state.md          ← generated from the journal; do not edit
 ```
