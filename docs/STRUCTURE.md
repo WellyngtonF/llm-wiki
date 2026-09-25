@@ -580,6 +580,11 @@ or nonzero active state remains fail-closed.
 - `knowledge/projects/<slug>/` — generated `state.md`, append-only
   `knowledge/projects/<slug>/journal.md`,
   `context.md`, `.blackboard/`. Template tracked; real projects gitignored.
+  The slug names a repository by its main checkout: a working directory resolves
+  upward to its git root, and a worktree's `.git` pointer file is followed to the
+  checkout that owns it, so subfolders and worktrees share one slug. The walk
+  never reaches the vault, the home directory, or an ancestor of either
+  (`scripts/repository_identity.py`, ADR 0002).
   `context.md` is written on request by
   `uv run python scripts/build_context.py --slug <name> --write`; see
   `docs/research/2026-09-18-the-project-context-page-gets-its-command-back.md`.

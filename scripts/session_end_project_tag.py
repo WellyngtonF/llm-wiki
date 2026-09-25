@@ -164,24 +164,24 @@ def _compute_slug(project_dir: Path, projects_dir: Path) -> str:
     return _base_slug(project_dir)
 
 
-def _owning_checkout(project_dir: Path) -> Path:
-    """See through an agent worktree to the checkout that owns it.
+def _owning_checkout(project_dir: Path, vault: Path) -> Path:
+    """The main checkout of the repository the directory belongs to.
 
-    The same rule as `session_start_project_state.owning_checkout`, imported
+    The same rule as `session_start_project_state.repository_of`, imported
     lazily so this thin hook keeps its import cost. A failed import leaves the
-    directory as it was: a tag under the worktree's own name is better than a
+    directory as it was: a tag under the directory's own name is better than a
     session-end hook that raises.
     """
     try:
-        from session_start_project_state import owning_checkout
+        from session_start_project_state import repository_of
     except Exception:  # noqa: BLE001
         return project_dir
-    return owning_checkout(project_dir)
+    return repository_of(project_dir, vault / "knowledge" / "projects")
 
 
-def _resolve_project_dir() -> Path:
+def _resolve_project_dir(vault: Path) -> Path:
     raw = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    return _owning_checkout(Path(raw).resolve())
+    return _owning_checkout(Path(raw).resolve(), vault)
 
 
 def _read_payload() -> dict:
@@ -247,7 +247,7 @@ def _vault_paths() -> tuple[Path, Path] | None:
 
 
 def _eligible_project(vault: Path) -> Path | None:
-    project_dir = _resolve_project_dir()
+    project_dir = _resolve_project_dir(vault)
     if _is_inside_vault(project_dir, vault):
         return None
     if _is_user_home(project_dir):

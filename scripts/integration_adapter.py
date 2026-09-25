@@ -37,7 +37,7 @@ from project_journal import (
     recover_project_handoff,
 )
 from secret_redact import redact_secrets
-from session_start_project_state import _compute_slug
+from session_start_project_state import project_identity
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DELEGATE_TIMEOUT_SECONDS = 10
@@ -680,8 +680,14 @@ def _checkpoint_event(
     envelope: EventEnvelope,
     slug: str,
     reason: str,
+    *,
+    repository: Path | None = None,
 ) -> dict[str, object]:
     delta = _checkpoint_delta(envelope)
+    # The journal reads this field as the project root, and slug ownership is
+    # checked against it, so it names the repository's main checkout rather than
+    # the subfolder or worktree the agent happened to be in (ADR 0002).
+    root = str(repository) if repository is not None else envelope.worktree
     return {
         "schema_version": "project-checkpoint/v1",
         "occurrence_id": envelope.event_id,
@@ -689,7 +695,7 @@ def _checkpoint_event(
         "provenance": {
             "agent": _known(envelope.agent),
             "session": _known(envelope.session),
-            "worktree": _known(envelope.worktree),
+            "worktree": _known(root),
             "branch": _known(_string(envelope.payload.get("branch"))),
             "source_event": _known(envelope.source_event_id, envelope.event_id),
         },
@@ -812,13 +818,15 @@ def _checkpoint_delta(envelope: EventEnvelope) -> dict[str, object]:
     return _derived_delta(envelope)
 
 
-def _pending_checkpoint(envelope: EventEnvelope, slug: str, state_key: str) -> dict[str, object]:
+def _pending_checkpoint(
+    envelope: EventEnvelope, slug: str, state_key: str, *, repository: Path | None = None
+) -> dict[str, object]:
     return {
         "event_id": envelope.event_id,
         "state_key": state_key,
         "occurred_at": envelope.occurred_at.isoformat(),
         "observation": _checkpoint_observation(envelope),
-        "checkpoint_event": _checkpoint_event(envelope, slug, "pending"),
+        "checkpoint_event": _checkpoint_event(envelope, slug, "pending", repository=repository),
         "has_project_delta": isinstance(envelope.payload.get("project_delta"), Mapping),
     }
 
@@ -882,9 +890,9 @@ def _split_project_delta(delta: Mapping[str, object]) -> list[dict[str, object]]
 
 
 def _pending_checkpoints(
-    envelope: EventEnvelope, slug: str, state_key: str
+    envelope: EventEnvelope, slug: str, state_key: str, *, repository: Path | None = None
 ) -> list[dict[str, object]]:
-    pending = _pending_checkpoint(envelope, slug, state_key)
+    pending = _pending_checkpoint(envelope, slug, state_key, repository=repository)
     delta = envelope.to_dict()["payload"].get("project_delta")
     if not isinstance(delta, Mapping):
         return [pending]
@@ -1758,7 +1766,7 @@ def _observe_project_checkpoint(
         return
     session_key = envelope.session or "unknown"
     state_key = f"{slug}:{session_key}"
-    pending_events = _pending_checkpoints(envelope, slug, state_key)
+    pending_events = _pending_checkpoints(envelope, slug, state_key, repository=project_dir)
 
     def enqueue(state: dict[str, Any]) -> None:
         _enqueue_pending_events(state, state_key, slug, pending_events)
@@ -1912,14 +1920,23 @@ def _observe_checkpoint_fail_open(envelope: EventEnvelope) -> None:
 
 
 def _project_context(envelope: EventEnvelope) -> tuple[str | None, Path | None]:
-    if not envelope.worktree:
+    """(slug, repository root) of the directory the event came from."""
+    directory = _observed_directory(envelope)
+    if directory is None:
         return None, None
     try:
-        project_dir = Path(envelope.worktree).resolve()
-        slug = _compute_slug(project_dir, ROOT / "knowledge" / "projects")
+        return project_identity(directory, ROOT / "knowledge" / "projects")
     except (OSError, ValueError):
         return None, None
-    return slug, project_dir
+
+
+def _observed_directory(envelope: EventEnvelope) -> Path | None:
+    if not envelope.worktree:
+        return None
+    try:
+        return Path(envelope.worktree).resolve()
+    except (OSError, ValueError):
+        return None
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -2544,7 +2561,7 @@ def _ingest_session_start(
         build_session_start_context(slug),
         _recover_project_handoff(slug, project_dir),
         trailing_newline=True,
-        code_graph=_code_graph_reminder(project_dir),
+        code_graph=_code_graph_reminder(_observed_directory(envelope) if project_dir else None),
     )
     _write_session_start_debug(result["context"])
 

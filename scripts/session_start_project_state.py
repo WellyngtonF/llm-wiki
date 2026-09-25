@@ -20,7 +20,9 @@ Contract (hard requirements):
 
 Slug rule (mirrors `~/.claude/CLAUDE.md` and
 [[Global Multi-Project Migration Plan]]):
-    1. Base: lowercase basename of CLAUDE_PROJECT_DIR (or cwd) with
+    0. CLAUDE_PROJECT_DIR (or cwd) first resolves to its repository's main
+       checkout (`repository_identity`); every step below reads that.
+    1. Base: lowercase basename of the main checkout with
        whitespace and unsafe chars replaced by hyphens. Non-ASCII chars
        (e.g. Cyrillic) are preserved — NTFS and Obsidian both handle them.
     2. On collision (another project recorded a different root under the
@@ -56,6 +58,7 @@ from project_journal import (
     portable_slug,
     recover_project_handoff,
 )
+from repository_identity import repository_root
 from secret_redact import redact_secrets
 
 # Force utf-8 on stdout (Windows cp1252 mojibakes Cyrillic otherwise).
@@ -321,9 +324,12 @@ def _slug_owns_dir(slug: str, project_dir: Path, projects_dir: Path) -> bool:
         # and move on. Caller will try parent-of-parent, git remote, etc.
         return False
     # Normalize both sides for a fair comparison. Windows paths use
-    # backslashes in state.md; resolve() + as_posix() for comparison.
+    # backslashes in state.md; resolve() + as_posix() for comparison. A root
+    # recorded before repository identity existed may name a subfolder or a
+    # worktree; it still owns the slug when it is the same repository.
     try:
-        recorded_norm = Path(recorded).resolve().as_posix().lower()
+        recorded_repository = repository_of(Path(recorded).resolve(), projects_dir)
+        recorded_norm = recorded_repository.resolve().as_posix().lower()
         current_norm = project_dir.resolve().as_posix().lower()
     except (OSError, ValueError):
         return recorded == str(project_dir)
@@ -340,21 +346,49 @@ def _compute_slug(project_dir: Path, projects_dir: Path) -> str:
       3. On further collision: git `owner-repo` from origin remote.
       4. On further collision: base + path-hash suffix (always unique).
 
-    An agent worktree resolves to the checkout that owns it before any of this
-    runs, so a subagent's temporary copy does not mint a project of its own.
+    The directory resolves to its repository's main checkout before any of
+    this runs (`project_identity`), so a subfolder or a worktree does not mint
+    a project of its own.
 
     Returns the first candidate that either doesn't exist or already
-    belongs to `project_dir` (same recorded Project root).
+    belongs to the repository (same recorded Project root).
     """
-    project_dir = owning_checkout(project_dir)
-    _require_project_candidate(project_dir, projects_dir)
-    base = _base_slug(project_dir)
-    for cand in _slug_candidates(project_dir, base)[:MAX_SLUG_CANDIDATES]:
-        if _slug_owns_dir(cand, project_dir, projects_dir):
-            return cand
+    return project_identity(project_dir, projects_dir)[0]
+
+
+def project_identity(project_dir: Path, projects_dir: Path) -> tuple[str, Path]:
+    """(slug, repository root) of the directory an agent is working in.
+
+    Raises `NotAProject` when the repository is the vault, inside it, a
+    temporary directory or the home directory.
+    """
+    repository = repository_of(project_dir, projects_dir)
+    _require_project_candidate(repository, projects_dir)
+    base = _base_slug(repository)
+    for cand in _slug_candidates(repository, base)[:MAX_SLUG_CANDIDATES]:
+        if _slug_owns_dir(cand, repository, projects_dir):
+            return cand, repository
     # All predictable slugs are taken by other projects — fall back to
     # a deterministic hash suffix. Guaranteed unique per path.
-    return f"{base}-{_path_hash_suffix(project_dir)}"
+    return f"{base}-{_path_hash_suffix(repository)}", repository
+
+
+def repository_of(project_dir: Path, projects_dir: Path) -> Path:
+    """The main checkout of the repository a directory belongs to.
+
+    The walk to the git root stops below the vault and the home directory, so
+    neither a repository holding the vault nor a dotfiles repository at home
+    claims the directories beneath it.
+    """
+    vault = Path(projects_dir).resolve().parent.parent
+    return repository_root(owning_checkout(project_dir), ceilings=(vault, *_home_ceiling()))
+
+
+def _home_ceiling() -> tuple[Path, ...]:
+    try:
+        return (Path.home(),)
+    except (OSError, RuntimeError):
+        return ()
 
 
 def _ancestor_name(project_dir: Path, generations: int) -> str:
@@ -465,9 +499,9 @@ def owning_checkout(project_dir: Path) -> Path:
     twelve candidates for "как устроен повтор после карантина" were project
     journals, seven of them from agent worktrees.
 
-    Only this exact layout is unwrapped. A worktree the owner made anywhere else
-    stays a project of its own: nothing here can tell whether that was
-    deliberate, and guessing would silently merge journals the owner separated.
+    This reads the path alone, so it still holds after the worktree is gone. A
+    worktree anywhere else is resolved by `repository_identity`, which follows
+    its `.git` pointer file to the main checkout.
     """
     parts = project_dir.parts
     width = len(AGENT_WORKTREE_MARKER)
@@ -615,7 +649,7 @@ def _run_session_start() -> int:
     if not projects_dir.is_dir():
         _safe_write_error(f"projects dir missing: {projects_dir}")
         return _emit_empty()
-    project_dir = _resolve_project_dir()
+    project_dir = repository_of(_resolve_project_dir(), projects_dir)
     slug = _compute_slug(project_dir, projects_dir)
     return _emit_project_context(vault, projects_dir, project_dir, slug)
 
