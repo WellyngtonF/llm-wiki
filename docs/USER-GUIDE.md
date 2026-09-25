@@ -419,6 +419,15 @@ Compile runs automatically on MAJOR sessions after the hour cutoff, but you
 can trigger it manually anytime. The pipeline uses VERIFY-BEFORE-WRITE —
 the LLM cannot fabricate citations.
 
+The links the model proposes for a note, on create and on update, are kept only
+when they name a live note (not superseded or otherwise retired) or a note created
+in the same compile. They are written as bare `[[slug]]`; a path-style
+`[[knowledge/notes/x]]` or `[[notes/x]]` becomes `[[x]]`. A note never links to
+itself. An update adds its new links to the note's `## Related` section, opening
+one above the `## Claims` ledger if the note has none. Every other link is
+dropped, and the compile's line in `knowledge/log.local.md` names it:
+`Dropped links: [[x]] (from slug-a).`
+
 ### Compile context window
 
 `MEMORY_COMPILE_CONTEXT_TOKENS` tells the compile how large the context window

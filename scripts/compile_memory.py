@@ -37,7 +37,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1666,6 +1666,9 @@ For example "reports a generic message and hides the resolver detail" is one err
 behavior, not two mutually exclusive has-state values for "legacy flow". Prefer one
 well-grounded claim to several redundant fragments. Never invent a changed state.
 Return an object with operations in the semantic compile format.
+List related notes as bare [[slug]] links. Each must name the slug of a listed
+knowledge/notes/<slug>.md path or of a page created in this same plan; the compiler
+drops any other link and never links a page to itself.
 
 EXISTING TARGET PATHS (complete inventory, even when source bodies are omitted)
 {canonical_json_bytes(sorted(item.logical_path for item in inputs.targets)).decode('utf-8')}
@@ -2609,6 +2612,107 @@ def _related_section(related: object) -> str:
     return "\n\n## Related\n" + "\n".join(f"- {item}" for item in related)
 
 
+# A proposed link: a target, then an optional `#heading` and/or `|alias`.
+_PROPOSED_LINK_RE = re.compile(
+    r"\[\[(?P<target>[^\[\]|#\r\n]+)(?P<rest>[#|][^\[\]\r\n]*)?\]\]"
+)
+_NOTE_LINK_PREFIXES = ("knowledge/notes/", "notes/")
+_RELATED_HEADING_RE = re.compile(rb"(?m)^## Related[ \t]*\r?$")
+_SECTION_HEADING_RE = re.compile(rb"(?m)^#{1,2} ")
+
+
+def _known_slugs(
+    inputs: CompileInputs, operations: Sequence[Mapping[str, object]]
+) -> frozenset[str]:
+    """What a link may name: the snapshot's live notes and the notes this plan creates.
+
+    A retired note is history (rule 12), so a new link to it is dropped too.
+    """
+    live = {
+        PurePosixPath(item.logical_path).stem
+        for item in inputs.targets
+        if not is_retired(_target_status(item))
+    }
+    created = {
+        PurePosixPath(str(item["path"])).stem
+        for item in operations
+        if item["kind"] == "create"
+    }
+    return frozenset(live | created)
+
+
+def _link_slug(target: str) -> str:
+    """The slug a link target names; a path-style link to a note loses its prefix."""
+    slug = target.strip()
+    for prefix in _NOTE_LINK_PREFIXES:
+        if slug.startswith(prefix):
+            slug = slug[len(prefix):]
+            break
+    return slug.removesuffix(".md")
+
+
+def _checked_links(
+    related: Sequence[object], slug: str, known: frozenset[str]
+) -> tuple[dict[str, str], list[str]]:
+    """The proposed links to write, bare and keyed by slug, and those naming no note."""
+    kept: dict[str, str] = {}
+    dropped: list[str] = []
+    for proposed in map(str, related):
+        match = _PROPOSED_LINK_RE.fullmatch(proposed)
+        target = _link_slug(match["target"]) if match else ""
+        if target == slug or target in kept:
+            continue
+        if target not in known:
+            if proposed not in dropped:
+                dropped.append(proposed)
+            continue
+        kept[target] = f"[[{target}{match['rest'] or ''}]]"
+    return kept, dropped
+
+
+def _with_related_links(page: bytes, links: Mapping[str, str]) -> bytes:
+    """Add links to the page's `## Related`, opening it before the ledger if absent."""
+    heading = _RELATED_HEADING_RE.search(page)
+    if heading is None:
+        return _opened_related(page, list(links.values()))
+    following = _SECTION_HEADING_RE.search(page, heading.end())
+    end = following.start() if following else len(page)
+    section = page[heading.end() : end]
+    present = {
+        _link_slug(match["target"])
+        for match in _PROPOSED_LINK_RE.finditer(section.decode("utf-8"))
+    }
+    fresh = [link for slug, link in links.items() if slug not in present]
+    if not fresh:
+        return page
+    body = section.rstrip()
+    added = "".join(f"\n- {link}" for link in fresh).encode("utf-8")
+    return page[: heading.end()] + body + added + section[len(body) :] + page[end:]
+
+
+def _opened_related(page: bytes, links: Sequence[str]) -> bytes:
+    """The claims ledger stays where it is; the new section goes just above it."""
+    if not links:
+        return page
+    block = ("## Related\n" + "".join(f"- {link}\n" for link in links)).encode("utf-8")
+    ledger = CLAIM_LEDGER_RE.search(page)
+    if ledger is None:
+        return page.rstrip() + b"\n\n" + block
+    return page[: ledger.start()] + block + b"\n" + page[ledger.start() :]
+
+
+def _dropped_links_phrase(dropped: Sequence[tuple[str, str]]) -> str:
+    if not dropped:
+        return ""
+    by_page: dict[str, list[str]] = {}
+    for slug, link in dropped:
+        by_page.setdefault(slug, []).append(link)
+    named = "; ".join(
+        f"{', '.join(links)} (from {slug})" for slug, links in by_page.items()
+    )
+    return f" Dropped links: {named}."
+
+
 
 
 def _ledger_bytes(claims: list) -> bytes:
@@ -3228,6 +3332,8 @@ class _ApplyPlan:
         self.receipt_operations: list[dict[str, str]] = []
         self.evidence_bindings: list[dict[str, str]] = []
         self.dispositions: list[dict[str, str]] = []
+        self.known_slugs: frozenset[str] = frozenset()
+        self.dropped_links: list[tuple[str, str]] = []
         self.operation_id = ""
         self.parent_transaction_id: str | None = None
 
@@ -3422,6 +3528,7 @@ class _ApplyPlan:
         }
         if self.claim_tree_manifest is not None:
             self.preconditions["claim_tree_manifest"] = self.claim_tree_manifest
+        self.known_slugs = _known_slugs(self.inputs, self.operations)
         for planned in self.operations:
             self._build_operation(planned)
 
@@ -3433,7 +3540,10 @@ class _ApplyPlan:
         if path != f"knowledge/notes/{semantic['slug']}.md":
             raise ValueError("compile operation path does not match its slug")
         references = [binding["reference"] for binding in bindings]
-        page = self._page_bytes(planned, semantic, references, path)
+        slug = str(semantic["slug"])
+        links, dropped = _checked_links(semantic["related"], slug, self.known_slugs)
+        self.dropped_links.extend((slug, link) for link in dropped)
+        page = self._page_bytes(planned, semantic, references, path, links)
         if len(page) > MAX_AFTER_IMAGE_BYTES:
             raise ValueError("compiled page exceeds after-image limit")
         self.pending[path] = page
@@ -3449,12 +3559,13 @@ class _ApplyPlan:
         semantic: Mapping[str, object],
         references: list[str],
         path: str,
+        links: Mapping[str, str],
     ) -> bytes:
         claims = self._rendered_claims(semantic, path)
         target = _target_snapshot(self.inputs, path)
         if planned["kind"] == "replace":
-            return self._replaced_page(path, target, semantic, references, claims)
-        return self._created_page(path, target, semantic, references, claims)
+            return self._replaced_page(path, target, semantic, references, claims, links)
+        return self._created_page(path, target, semantic, references, claims, links)
 
     def _replaced_page(
         self,
@@ -3463,11 +3574,13 @@ class _ApplyPlan:
         semantic: Mapping[str, object],
         references: list[str],
         claims: list[dict[str, object]],
+        links: Mapping[str, str],
     ) -> bytes:
         if target is None:
             raise ValueError("replace target was absent from snapshot")
         update = _update_section(semantic, references, self.completed_at)
-        page = _with_claim_ledger(target.content.rstrip() + update, claims)
+        linked = _with_related_links(target.content.rstrip() + update, links)
+        page = _with_claim_ledger(linked, claims)
         self.changes.append(
             MarkdownChange.replace(path, page, max_before_bytes=MAX_AFTER_IMAGE_BYTES)
         )
@@ -3481,10 +3594,13 @@ class _ApplyPlan:
         semantic: Mapping[str, object],
         references: list[str],
         claims: list[dict[str, object]],
+        links: Mapping[str, str],
     ) -> bytes:
         if target is not None:
             raise ValueError("create target existed in snapshot")
-        rendered = _render_page(semantic, self.completed_at, references)
+        rendered = _render_page(
+            {**semantic, "related": list(links.values())}, self.completed_at, references
+        )
         page = _with_claim_ledger(rendered, claims)
         self.changes.append(
             MarkdownChange.create(path, page, max_before_bytes=MAX_AFTER_IMAGE_BYTES)
@@ -3627,7 +3743,7 @@ class _ApplyPlan:
         return (
             f"- {self.completed_at[:10]} — {_trigger_word(self.trigger)} "
             f"compile completed for snapshot {', '.join(self.source_digests)}. "
-            f"Touched: {touched}."
+            f"Touched: {touched}.{_dropped_links_phrase(self.dropped_links)}"
         )
 
     def _append_receipts(self) -> None:
