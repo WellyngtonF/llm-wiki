@@ -91,6 +91,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   which never carries a claim, so a compile that overlapped a working agent failed
   its precondition. `state.md` leaves the claim files, as `journal.md` did; the
   set is `context.md`. Same note.
+- **A claim compiled again is not a conflict.** A daily rewritten after its compile
+  is compiled again, and the same line yields the same claim id; the update was
+  refused as a duplicate id on every retry. A claim the target already holds with
+  the same fingerprint is now dropped and named in the drop log; a different claim
+  under a held id is still refused. Same note.
 - **A hook never starts a write it cannot finish.** Hooks waited up to 10 s for the
   global writer gate inside a 5 s host timeout. The one cancelled mid-write held the
   gate until its 30 s lease lapsed, the hooks behind it did the same, and the compile

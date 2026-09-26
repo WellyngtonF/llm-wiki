@@ -57,6 +57,21 @@ agent fail. `journal.md` left the set on 2026-09-10 for the same reason; `state.
 follows it, and the set is `context.md` alone. The claim index and lint read the same
 set, so they stop reading `state.md` for claims too.
 
+## The third refusal: the same claim, compiled again
+
+After both fixes were deployed, the next run failed with `compile claim id already exists
+in target ledger`. An instrumented run named the claim. The note already held it, and the
+new record differed only in `evidence.reference`: the same quote, the same bytes, and the
+same block, but a different daily digest. The evening consolidation had rewritten the
+day's daily after its compile, so the day was pending again. The same line gave the same
+claim, and a claim id is its date and the prefix of its semantic fingerprint.
+
+`_merged_claims` treats any repeated id as a conflict, and the rule is right for a
+different claim under one id. For the same fingerprint it is the same fact. A `replace`
+now drops a claim the target's ledger already holds with that fingerprint and names the
+drop (`claim already in the target ledger`) in the drop log. The ledger keeps the first
+record and its evidence. A held id with other semantics is still refused.
+
 ## Side observation, not changed
 
 After a failed session-triggered compile, `run/compile.pid` named a dead process. The

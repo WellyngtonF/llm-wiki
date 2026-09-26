@@ -1243,6 +1243,68 @@ def test_two_pages_supersede_claims_on_one_third_page_in_one_change(vault, monke
     )
 
 
+def test_a_claim_the_page_already_holds_is_not_written_twice(vault, monkeypatch):
+    """A daily rewritten after its compile is compiled again, and its claims come back."""
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+
+    again = _claim_record(
+        root, claim_id="held", value="green",
+        text="A durable exact-byte observation.", authority="ai-derived",
+    )
+    current = sha256_bytes(daily.read_bytes())
+    held = {
+        **again,
+        "evidence": {
+            **again["evidence"],
+            "reference": again["evidence"]["reference"].replace(current, "0" * 64),
+        },
+    }
+    page = root / "knowledge/notes/existing.md"
+    page.write_bytes(_ledger_page("Existing", [held]))
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    result = compile_memory.apply_compile_plan(
+        inputs,
+        {"schema_version": "compile-plan/v2", "operations": [_operation("replace", "existing", [again])]},
+        action_key="8" * 64, trigger="manual",
+        coordinator=MarkdownCoordinator(root, state_root),
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
+    assert (result.state, _ledger_lifecycles(page.read_bytes())) == (
+        "committed", {"held": "active"}
+    )
+    assert compile_memory.DROPPED_CLAIMS[-1]["detail"] == "claim already in the target ledger"
+
+
+def test_a_different_claim_under_a_held_id_is_still_refused(vault, monkeypatch):
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+
+    held = _claim_record(
+        root, claim_id="held", value="green",
+        text="A durable exact-byte observation.", authority="ai-derived",
+    )
+    page = root / "knowledge/notes/existing.md"
+    page.write_bytes(_ledger_page("Existing", [held]))
+    other = _about(held, "other") | {"id": "held"}
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    with pytest.raises(ValueError, match="already exists in target ledger"):
+        compile_memory.apply_compile_plan(
+            inputs,
+            {"schema_version": "compile-plan/v2", "operations": [_operation("replace", "existing", [other])]},
+            action_key="9" * 64, trigger="manual",
+            coordinator=MarkdownCoordinator(root, state_root),
+            completed_at="2026-07-14T12:00:00Z",
+        )
+
+
 def test_a_live_session_rewriting_its_project_state_does_not_refuse_the_compile(
     vault, monkeypatch
 ):

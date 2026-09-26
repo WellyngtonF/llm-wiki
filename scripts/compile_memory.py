@@ -3499,6 +3499,32 @@ def _merged_claims(existing: list, additions: list) -> list:
     return list(by_id.values())
 
 
+def _claims_new_to(
+    content: bytes, claims: Sequence[Mapping[str, object]], path: str
+) -> list[Mapping[str, object]]:
+    """A claim the target's ledger already holds is that claim, not a second one.
+
+    A daily rewritten after its compile is compiled again, and the same line yields
+    the same claim id with evidence naming the daily's new digest. The same id with
+    other semantics is still a conflict. See
+    docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md.
+    """
+    match = CLAIM_LEDGER_RE.search(content)
+    if match is None:
+        return list(claims)
+    held = {str(item["id"]): item for item in json.loads(match[2])["claims"]}
+    fresh = []
+    for record in claims:
+        existing = held.get(str(record["id"]))
+        if existing is None:
+            fresh.append(record)
+        elif existing.get("fingerprint") == record.get("fingerprint"):
+            _report_dropped_claim(Path(path).stem, "claim already in the target ledger")
+        else:
+            raise ValueError("compile claim id already exists in target ledger")
+    return fresh
+
+
 def _with_claim_ledger(page: bytes, records: Sequence[Mapping[str, object]]) -> bytes:
     if not records:
         return page
@@ -4368,7 +4394,7 @@ class _ApplyPlan:
         self._remember_new_tags(added, project)
         update = _update_section(semantic, references, self.completed_at)
         linked = _with_related_links(tagged.rstrip() + update, links)
-        page = _with_claim_ledger(linked, claims)
+        page = _with_claim_ledger(linked, _claims_new_to(target.content, claims, path))
         self.changes.append(
             MarkdownChange.replace(path, page, max_before_bytes=MAX_AFTER_IMAGE_BYTES)
         )
