@@ -32,16 +32,16 @@ def test_every_reader_of_a_journal_accepts_what_the_journal_may_be() -> None:
 
 
 def test_the_claim_readers_share_one_file_set_and_it_has_no_journal(tmp_path: Path) -> None:
-    """The journal is the event log the state is projected from, not a page
-    that carries claims; three readers name the same two files from one place."""
-    assert claim_tree_manifest.PROJECT_CLAIM_FILES == {"context.md", "state.md"}
+    """The journal is the event log the state is projected from, and the state its
+    projection; neither carries claims, and three readers name one file from one place."""
+    assert claim_tree_manifest.PROJECT_CLAIM_FILES == {"context.md"}
     project = tmp_path / "knowledge" / "projects" / "demo"
     project.mkdir(parents=True)
     for name in ("context.md", "journal.md", "state.md", "other.md"):
         (project / name).write_text("---\ntype: project-state\n---\n# X\n", encoding="utf-8")
     projects = tmp_path / "knowledge" / "projects"
-    assert [p.name for p in lint_memory._project_claim_pages(projects)] == ["context.md", "state.md"]
-    assert sorted(p.name for p in claims._project_pages(projects)) == ["context.md", "state.md"]
+    assert [p.name for p in lint_memory._project_claim_pages(projects)] == ["context.md"]
+    assert sorted(p.name for p in claims._project_pages(projects)) == ["context.md"]
 
 
 def test_a_journal_past_every_cap_no_longer_stops_a_claim_rebuild(tmp_path: Path) -> None:

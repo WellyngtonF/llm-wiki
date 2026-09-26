@@ -30,7 +30,11 @@ MAX_GUARDRAIL_SOURCE_MANIFEST_BYTES = 2 * 1024 * 1024
 # raw log couples itself to the write side (Azure event-sourcing pattern,
 # Kurrent on snapshots); it read 4.2 MB per compile and found nothing. See
 # `docs/research/2026-09-10-a-timeout-is-a-hang-bound-not-a-stopwatch.md`.
-PROJECT_CLAIM_FILES = frozenset({"context.md", "state.md"})
+# `state.md` is that log's projection, rewritten whole on every checkpoint of
+# every live session and never given a ledger; fencing it refused each compile
+# that overlapped a working agent. See
+# `docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md`.
+PROJECT_CLAIM_FILES = frozenset({"context.md"})
 
 _CLAIM_TREE_FIELDS = frozenset({"schema_version", "entries", "absence_generation"})
 _GUARDRAIL_FIELDS = frozenset({"schema_version", "entries", "source_manifest_sha256"})

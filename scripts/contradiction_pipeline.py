@@ -1072,19 +1072,28 @@ class ContradictionPipeline:
         self.coordinator.apply(transaction.id)
 
     def plan_changes(
-        self, assessments: Sequence[ClaimAssessment]
+        self,
+        assessments: Sequence[ClaimAssessment],
+        pending: Mapping[str, bytes] | None = None,
     ) -> tuple[list[MarkdownChange], dict[str, object], tuple[str, ...]]:
-        changes, preconditions, created, _present = self.plan_candidate_changes(assessments)
+        changes, preconditions, created, _present = self.plan_candidate_changes(
+            assessments, pending
+        )
         return changes, preconditions, created
 
     def plan_candidate_changes(
-        self, assessments: Sequence[ClaimAssessment]
+        self,
+        assessments: Sequence[ClaimAssessment],
+        pending: Mapping[str, bytes] | None = None,
     ) -> tuple[list[MarkdownChange], dict[str, object], tuple[str, ...], tuple[str, ...]]:
         """Changes, preconditions, candidates to create, and candidates already on disk.
 
         A candidate path names one claim over one evidence span; a file there that
         embeds the same claim identity is that review item, so it is not created
         twice (docs/research/2026-09-11-a-quarantined-claim-is-written-once.md).
+        `pending` holds after-images the caller's transaction already writes; a
+        lifecycle target there is superseded in that image, not in the disk bytes
+        (docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md).
         """
         if self.vault is None:
             raise ValueError("mutation planning requires a vault")
@@ -1102,7 +1111,9 @@ class ContradictionPipeline:
                 continue
             changes.append(MarkdownChange.create(path, content))
             created.append(path)
-        lifecycle_changes, preconditions = self._lifecycle_changes(sorted(mutations))
+        lifecycle_changes, preconditions = self._lifecycle_changes(
+            sorted(mutations), pending or {}
+        )
         changes.extend(lifecycle_changes)
         return changes, preconditions, tuple(created), tuple(present)
 
@@ -1145,7 +1156,7 @@ class ContradictionPipeline:
             raise RuntimeError("candidate parent creation requires writer ownership")
 
     def _lifecycle_changes(
-        self, mutations: Sequence[LifecycleTarget]
+        self, mutations: Sequence[LifecycleTarget], pending: Mapping[str, bytes]
     ) -> tuple[list[MarkdownChange], dict[str, object]]:
         grouped = _grouped_targets(mutations)
         changes = []
@@ -1155,7 +1166,9 @@ class ContradictionPipeline:
                 item.canonical() for item in sorted(mutations)
             ]
         for path, targets in grouped.items():
-            changes.append(self._lifecycle_change(path, targets, preconditions))
+            changes.append(
+                self._lifecycle_change(path, targets, preconditions, pending.get(path))
+            )
         return changes, preconditions
 
     def _lifecycle_change(
@@ -1163,12 +1176,19 @@ class ContradictionPipeline:
         path: str,
         targets: Mapping[str, LifecycleTarget],
         preconditions: dict[str, object],
+        pending: bytes | None = None,
     ) -> MarkdownChange:
-        """Supersede every named claim on one page, refusing any drifted identity."""
-        raw = read_stable_bytes(
-            self.vault / path, MAX_CLAIM_PAGE_BYTES, label="claim lifecycle page"
-        )
-        preconditions[path] = sha256_bytes(raw)
+        """Supersede every named claim on one page, refusing any drifted identity.
+
+        A pending after-image already carries its page's precondition.
+        """
+        if pending is None:
+            raw = read_stable_bytes(
+                self.vault / path, MAX_CLAIM_PAGE_BYTES, label="claim lifecycle page"
+            )
+            preconditions[path] = sha256_bytes(raw)
+        else:
+            raw = pending
         match = CLAIM_LEDGER_RE.search(raw)
         if match is None:
             raise ValueError("lifecycle target has no canonical claim ledger")

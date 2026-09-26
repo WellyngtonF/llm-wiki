@@ -4465,7 +4465,7 @@ class _ApplyPlan:
         for pipeline, assessments in self.claim_groups:
             try:
                 changes, preconditions, candidate_paths = pipeline.plan_changes(
-                    assessments
+                    assessments, self._after_images()
                 )
             except StaleLifecycleTarget:
                 return self._commit_quarantine()
@@ -4475,16 +4475,42 @@ class _ApplyPlan:
             self.claim_groups[0][0].ensure_candidate_parent()
         return None
 
+    def _after_images(self) -> dict[str, bytes]:
+        return {
+            item.path: item.content for item in self.changes if item.content is not None
+        }
+
     def _add_policy_changes(
         self, changes: Sequence[MarkdownChange], preconditions: Mapping[str, object]
     ) -> None:
-        known = {item.path for item in self.changes}
         for change in changes:
-            _require_unclaimed_path(known, change.path)
+            if self._supersede_pending(change):
+                continue
             self.changes.append(change)
             self.preconditions[change.path] = preconditions.get(change.path, "absent")
             self._remember_pending(change)
             self.touched.append(change.path)
+
+    def _supersede_pending(self, change: MarkdownChange) -> bool:
+        """A page this batch already writes takes the lifecycle image in place.
+
+        A corrected fact and the fact it corrects often share one page. The earlier
+        change keeps its kind, size bound and precondition; its receipt names the
+        final bytes. See docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md.
+        """
+        index = next(
+            (i for i, item in enumerate(self.changes) if item.path == change.path), None
+        )
+        if index is None:
+            return False
+        if change.content is None:
+            raise ValueError("compile claim lifecycle deletes a compile operation target")
+        self.changes[index] = replace(self.changes[index], content=change.content)
+        self._remember_pending(change)
+        for operation in self.receipt_operations:
+            if operation["path"] == change.path:
+                operation["after_sha256"] = sha256_bytes(change.content)
+        return True
 
     def _remember_pending(self, change: MarkdownChange) -> None:
         """Only note pages feed the index rebuild."""
@@ -4728,12 +4754,6 @@ def _claim_lifecycle(record: Mapping[str, object], quarantined: set[str]) -> obj
     if str(record["id"]) in quarantined:
         return "quarantined"
     return record["lifecycle"]
-
-
-def _require_unclaimed_path(known: set[str], path: str) -> None:
-    if path in known:
-        raise ValueError("compile claim lifecycle overlaps a compile operation target")
-    known.add(path)
 
 
 def _touched_phrase(touched: Sequence[str]) -> str:

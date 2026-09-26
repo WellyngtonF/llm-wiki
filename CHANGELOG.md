@@ -77,6 +77,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   named by `doctor`, which keeps `run/` from deletion while they exist. See
   `docs/research/2026-09-23-the-json-queue-import-goes.md`.
 
+### Fixed
+
+- **A page can supersede its own claim.** When a compile updated a note and a new
+  claim on it contradicted an older claim on the same note, the supersession was
+  refused as an overlap, the whole batch failed, and every retry failed the same
+  way; two new notes superseding claims on one third note failed alike. The
+  lifecycle write now lands in the after-image the batch already writes, and the
+  receipt names the final bytes. See
+  `docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md`.
+- **A working agent no longer refuses the compile.** The claim tree fenced each
+  project's `state.md`, which every live session rewrites on each checkpoint and
+  which never carries a claim, so a compile that overlapped a working agent failed
+  its precondition. `state.md` leaves the claim files, as `journal.md` did; the
+  set is `context.md`. Same note.
+
 ### Changed
 
 - **A fresh install builds its first generation.** `doctor` reports a missing

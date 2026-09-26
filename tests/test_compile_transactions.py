@@ -1126,6 +1126,163 @@ def test_compile_same_id_replacement_after_assessment_quarantines_without_mutati
     ) == (True, True, False)
 
 
+def _about(record: dict[str, object], subject: str) -> dict[str, object]:
+    moved = {**record, "subject": subject}
+    moved["fingerprint"] = sha256_bytes(
+        canonical_json_bytes(
+            {key: moved[key] for key in ("subject", "relation", "value", "qualifiers", "validity")}
+        )
+    )
+    return moved
+
+
+def _ledger_page(title: str, records: list[dict[str, object]]) -> bytes:
+    return (
+        f"---\ntype: concept\n---\n# {title}\n\nOne-sentence summary: {title}.\n\n"
+        "## Claims\n```json\n"
+    ).encode() + canonical_json_bytes(
+        {"schema_version": "claim-ledger/v1", "claims": records}
+    ) + b"\n```\n"
+
+
+def _ledger_lifecycles(page: bytes) -> dict[str, str]:
+    ledger = json.loads(page.split(b"```json\n")[-1].split(b"\n```")[0])
+    return {item["id"]: item["lifecycle"] for item in ledger["claims"]}
+
+
+def _operation(kind: str, slug: str, claims: list[dict[str, object]]) -> dict[str, object]:
+    content = json.loads(str(_semantic_plan()["operations"][0]["content"]))
+    content.update(
+        action="create" if kind == "create" else "update",
+        slug=slug,
+        title=slug.title(),
+        claims=claims,
+    )
+    return {
+        "kind": kind,
+        "path": f"knowledge/notes/{slug}.md",
+        "content": canonical_json_bytes(content).decode(),
+    }
+
+
+def test_an_update_supersedes_a_claim_on_the_page_it_rewrites(vault, monkeypatch):
+    """The corrected fact and the fact it corrects live on one page: one change, not a refusal."""
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+
+    old = _claim_record(
+        root, claim_id="old", value="blue",
+        text="The prior state is blue.", authority="web",
+    )
+    page = root / "knowledge/notes/existing.md"
+    page.write_bytes(_ledger_page("Existing", [old]))
+    new = _claim_record(
+        root, claim_id="new", value="green",
+        text="A durable exact-byte observation.", authority="user",
+    )
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    coordinator = MarkdownCoordinator(root, state_root)
+    result = compile_memory.apply_compile_plan(
+        inputs,
+        {"schema_version": "compile-plan/v2", "operations": [_operation("replace", "existing", [new])]},
+        action_key="5" * 64, trigger="manual",
+        coordinator=coordinator,
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
+    current = page.read_bytes()
+    assert (result.state, _ledger_lifecycles(current)) == (
+        "committed", {"old": "superseded", "new": "active"}
+    )
+    assert b"## Update (2026-07-14)" in current
+    assert b"superseded_by" not in current
+    receipt = compile_memory.read_compile_receipt(inputs.dailies[0].sha256, coordinator)
+    assert [item["after_sha256"] for item in receipt["operations"]] == [
+        sha256_bytes(current)
+    ]
+
+
+def test_two_pages_supersede_claims_on_one_third_page_in_one_change(vault, monkeypatch):
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+
+    first_old = _claim_record(
+        root, claim_id="first-old", value="blue",
+        text="The prior state is blue.", authority="web",
+    )
+    second_old = _about(first_old, "other") | {"id": "second-old"}
+    shared = root / "knowledge/notes/shared.md"
+    shared.write_bytes(_ledger_page("Shared", [first_old, second_old]))
+    first_new = _claim_record(
+        root, claim_id="first-new", value="green",
+        text="A durable exact-byte observation.", authority="user",
+    )
+    second_new = _about(first_new, "other") | {"id": "second-new"}
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+    plan = {
+        "schema_version": "compile-plan/v2",
+        "operations": [
+            _operation("create", "first-page", [first_new]),
+            _operation("create", "second-page", [second_new]),
+        ],
+    }
+
+    result = compile_memory.apply_compile_plan(
+        inputs, plan, action_key="6" * 64, trigger="manual",
+        coordinator=MarkdownCoordinator(root, state_root),
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
+    assert (result.state, _ledger_lifecycles(shared.read_bytes())) == (
+        "committed", {"first-old": "superseded", "second-old": "superseded"}
+    )
+
+
+def test_a_live_session_rewriting_its_project_state_does_not_refuse_the_compile(
+    vault, monkeypatch
+):
+    """`state.md` is folded from the journal on every checkpoint and carries no claims."""
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+    import contradiction_pipeline
+
+    state = root / "knowledge/projects/demo/repo/state.md"
+    state.parent.mkdir(parents=True)
+    state.write_bytes(b"---\ntype: project-state\n---\n# Work state\n\n- sequence 1\n")
+    new = _claim_record(
+        root, claim_id="new", value="green",
+        text="A durable exact-byte observation.", authority="user",
+    )
+    original_assess = contradiction_pipeline.ContradictionPipeline.assess
+
+    def assess_then_checkpoint(self, *args, **kwargs):
+        result = original_assess(self, *args, **kwargs)
+        state.write_bytes(state.read_bytes() + b"- sequence 2\n")
+        return result
+
+    monkeypatch.setattr(
+        contradiction_pipeline.ContradictionPipeline, "assess", assess_then_checkpoint
+    )
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    result = compile_memory.apply_compile_plan(
+        inputs,
+        {"schema_version": "compile-plan/v2", "operations": [_operation("create", "fresh", [new])]},
+        action_key="7" * 64, trigger="manual",
+        coordinator=MarkdownCoordinator(root, state_root),
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
+    assert (result.state, (root / "knowledge/notes/fresh.md").exists()) == ("committed", True)
+
+
 def test_committed_compile_clears_durable_source_failure(vault):
     root, state_root = vault
     daily = _daily(root)
