@@ -91,6 +91,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   which never carries a claim, so a compile that overlapped a working agent failed
   its precondition. `state.md` leaves the claim files, as `journal.md` did; the
   set is `context.md`. Same note.
+- **A hook never starts a write it cannot finish.** Hooks waited up to 10 s for the
+  global writer gate inside a 5 s host timeout. The one cancelled mid-write held the
+  gate until its 30 s lease lapsed, the hooks behind it did the same, and the compile
+  and the breadcrumbs timed out behind them. A hook now enqueues its checkpoint,
+  runs its capture, and writes the checkpoint only if it can finish before the host's
+  timeout; otherwise the event stays pending for the next hook or the nightly. See
+  `docs/research/2026-09-26-a-hook-never-starts-a-write-it-cannot-finish.md`.
 
 ### Changed
 

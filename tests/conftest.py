@@ -188,7 +188,7 @@ _APPEND_BUDGETS = (
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        f"{SHIPPED_APPEND_BUDGETS}: the test measures the hooks' append budgets and sees the shipped values",
+        f"{SHIPPED_APPEND_BUDGETS}: the test measures the hooks' budgets and sees the shipped values",
     )
 
 
@@ -200,13 +200,24 @@ def _unhurried_hook_appends(request, monkeypatch):
     fresh vault took 1.4-5.6 s on the Windows shards, the breadcrumb budget is 3 s, and a
     writer past it gives up by design. Patched by name, so a reloaded module is patched too.
     Research: docs/research/2026-09-17-a-content-test-does-not-race-the-hook-budget.md.
+    The hook's own deadline, which decides whether its checkpoint write may still
+    start, is relaxed the same way
+    (docs/research/2026-09-26-a-hook-never-starts-a-write-it-cannot-finish.md).
     """
     if request.node.get_closest_marker(SHIPPED_APPEND_BUDGETS):
         return
+    from types import MappingProxyType
+
     from tests.slow_machine import LONG_TIMEOUT
 
     for budget in _APPEND_BUDGETS:
         monkeypatch.setattr(budget, LONG_TIMEOUT)
+    import integration_adapter
+
+    monkeypatch.setattr(
+        "integration_adapter.HOOK_HOST_SECONDS",
+        MappingProxyType(dict.fromkeys(integration_adapter.HOOK_HOST_SECONDS, LONG_TIMEOUT)),
+    )
 
 
 # Default fake provider for any accidental live LLM calls in unit tests.

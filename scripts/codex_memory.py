@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,6 +106,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from integration_adapter import (  # noqa: E402
     _observe_checkpoint_fail_open,
+    hook_deadline,
     ingest_event,
     normalize_occurrence_event,
 )
@@ -418,16 +420,23 @@ def _restore_claim(session_id: str, before: object) -> None:
         return
 
 
-def _ingest_claimed(envelope: Any, session_id: str, plan: dict[str, Any]) -> dict[str, Any]:
+def _ingest_claimed(
+    envelope: Any, session_id: str, plan: dict[str, Any], started: float | None = None
+) -> dict[str, Any]:
+    started = time.monotonic() if started is None else started
     try:
-        return ingest_event(envelope, trigger="codex-hook")
+        return ingest_event(
+            envelope,
+            trigger="codex-hook",
+            deadline=hook_deadline(envelope.event_type, started),
+        )
     except Exception:
         if plan["claimed"]:
             _restore_claim(session_id, plan["before"])
         raise
 
 
-def _capture_quiet_tail(tail: dict[str, Any] | None) -> None:
+def _capture_quiet_tail(tail: dict[str, Any] | None, started: float | None = None) -> None:
     """Capture the end of a session that stopped talking; its failure is its own."""
     if tail is None:
         return
@@ -439,28 +448,37 @@ def _capture_quiet_tail(tail: dict[str, Any] | None) -> None:
         "reason": "stop",
     }
     try:
-        ingest_event(normalize_occurrence_event("codex", "session_end", raw), trigger="codex-hook")
+        ingest_event(
+            normalize_occurrence_event("codex", "session_end", raw),
+            trigger="codex-hook",
+            deadline=hook_deadline(
+                "session_end", time.monotonic() if started is None else started
+            ),
+        )
     except Exception as error:  # noqa: BLE001 - recorded; the hook's own answer still stands
         _restore_claim(tail["session_id"], tail["before"])
         _record_hook_failure(error, tail["session_id"])
 
 
-def _ingest_codex_hook(raw: dict[str, Any], now: datetime) -> tuple[dict[str, Any], Any]:
+def _ingest_codex_hook(
+    raw: dict[str, Any], now: datetime, started: float | None = None
+) -> tuple[dict[str, Any], Any]:
     """(the result of this hook's own event, the quiet tail still to capture)."""
     normalize_codex_hook(raw)
     plan = _turn_end_plan(raw, now)
     stop_event = "session_end" if plan["capture"] else "stop"
     envelope = normalize_codex_hook(raw, stop_event=stop_event)
-    return _ingest_claimed(envelope, raw["session_id"], plan), plan["tail"]
+    return _ingest_claimed(envelope, raw["session_id"], plan, started), plan["tail"]
 
 
 def _dispatch_hook(seen: dict[str, object]) -> None:
     """`seen` carries the event name out, so the failure path can answer Stop."""
+    started = time.monotonic()
     raw = _read_hook_input()
     seen["event_name"] = raw["hook_event_name"]
-    result, tail = _ingest_codex_hook(raw, _utc_now())
+    result, tail = _ingest_codex_hook(raw, _utc_now(), started)
     print(json.dumps(_hook_output(seen["event_name"], result), ensure_ascii=False))
-    _capture_quiet_tail(tail)
+    _capture_quiet_tail(tail, started)
 
 
 def _report_hook_failure(event_name: object) -> None:

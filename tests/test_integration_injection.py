@@ -480,7 +480,7 @@ def test_adapter_observes_same_envelope_once_before_durable_capture(monkeypatch,
     calls = []
     monkeypatch.setattr(
         integration_adapter,
-        "_observe_project_checkpoint",
+        "_enqueue_project_checkpoint",
         lambda envelope: calls.append(("observe", envelope)),
     )
     monkeypatch.setattr(
@@ -630,7 +630,7 @@ def test_durable_capture_runs_when_checkpoint_observation_fails(monkeypatch, cap
     calls = []
     monkeypatch.setattr(
         integration_adapter,
-        "_observe_project_checkpoint",
+        "_enqueue_project_checkpoint",
         lambda envelope: (_ for _ in ()).throw(RuntimeError("x" * 2000)),
     )
 
@@ -1970,7 +1970,7 @@ def test_claude_outer_session_start_preserves_hook_output_contract(monkeypatch, 
     monkeypatch.setattr(
         integration_adapter,
         "ingest_event",
-        lambda _envelope: {"context": "combined context\n"},
+        lambda _envelope, **_kwargs: {"context": "combined context\n"},
     )
     monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
 
@@ -2026,7 +2026,7 @@ def test_claude_session_end_uses_one_adapter_occurrence_for_both_side_effects(
 
     monkeypatch.setattr(
         integration_adapter,
-        "_observe_project_checkpoint",
+        "_enqueue_project_checkpoint",
         observe,
     )
     monkeypatch.setattr(integration_adapter, "_run_delegate", delegate)

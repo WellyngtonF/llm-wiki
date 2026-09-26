@@ -358,7 +358,7 @@ def test_lifecycle_cli_delegate_uses_shared_ingest_boundary(
     monkeypatch.setattr(
         integration_adapter,
         "ingest_event",
-        lambda event: calls.append(event) or {"capture_intent_ids": ["1" * 64]},
+        lambda event, **_kwargs: calls.append(event) or {"capture_intent_ids": ["1" * 64]},
     )
     monkeypatch.setattr(
         integration_adapter,

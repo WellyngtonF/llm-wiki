@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from event_envelope import EventEnvelope, build_event_envelope
@@ -71,6 +72,37 @@ BACKLOG_STATE_LOCK_SECONDS = 10.0
 
 # A bound on the recovery itself, so an unattended pass can never hang on it.
 BACKLOG_DRAIN_SECONDS = 120.0
+
+# The host cancels a hook at the timeout the installer ships for it, the smaller of
+# `integrations/claude-code/settings.json` and `integrations/codex/hooks.json`. A hook
+# cancelled inside the global writer gate holds it until its 30 s lease lapses, and
+# every hook behind it waits, is cancelled and holds it again; so a hook starts a
+# checkpoint write only while the write can still finish. See
+# `docs/research/2026-09-26-a-hook-never-starts-a-write-it-cannot-finish.md`.
+HOOK_HOST_SECONDS = MappingProxyType(
+    {
+        "user_prompt": 5.0,
+        "post_tool_use": 5.0,
+        "stop": 10.0,
+        "session_start": 15.0,
+        "pre_compact": 15.0,
+        "session_end": 15.0,
+    }
+)
+# `uv` starting the interpreter before this module runs, and the exit after it.
+HOOK_EXIT_ROOM_SECONDS = 1.5
+# The longest project checkpoint transaction on the owner's vault on 2026-09-26: 1.74 s.
+CHECKPOINT_WRITE_SECONDS = 2.0
+
+
+def hook_deadline(event_type: str, started: float) -> float:
+    """The monotonic instant a hook for `event_type`, started at `started`, must be done."""
+    host = HOOK_HOST_SECONDS.get(event_type, min(HOOK_HOST_SECONDS.values()))
+    return started + host - HOOK_EXIT_ROOM_SECONDS
+
+
+class CheckpointStartPassed(Exception):
+    """Too late in the hook to start a write; the event stays pending."""
 
 MAX_CAPTURE_EVIDENCE_BYTES = 900 * 1024
 CAPTURE_HANDLER_VERSION = 1
@@ -1508,11 +1540,13 @@ def _write_project_checkpoint(
     selected: Sequence[Mapping[str, object]],
     decision: CheckpointDecision,
     writer_wait_seconds: float | None,
+    start_by: float | None = None,
 ) -> None:
     checkpoint = _merge_pending_checkpoints(selected, decision)
     event_id = str(selected[-1]["event_id"])
     args = (slug, checkpoint, f"lifecycle:{event_id[:16]}")
     store, _key = work_state_store(ROOT, STATE_ROOT)
+    writer_wait_seconds = _wait_before(start_by, writer_wait_seconds)
     if writer_wait_seconds is None:
         store.checkpoint(*args)
         return
@@ -1529,6 +1563,18 @@ def _commit_maintenance_observations(
             reducers[str(item["state_key"])].commit_observation(decision, outcome="maintenance")
 
 
+def _wait_before(start_by: float | None, writer_wait_seconds: float | None) -> float | None:
+    """The gate wait that still lets the write start by `start_by`."""
+    if start_by is None:
+        return writer_wait_seconds
+    remaining = start_by - time.monotonic()
+    if remaining <= 0:
+        raise CheckpointStartPassed("no time left in the hook to start a checkpoint write")
+    if writer_wait_seconds is None:
+        return remaining
+    return min(writer_wait_seconds, remaining)
+
+
 def _persist_selected(
     slug: str,
     selected: Sequence[Mapping[str, object]],
@@ -1536,11 +1582,14 @@ def _persist_selected(
     reducers: Mapping[str, CheckpointReducer],
     checkpoint_decision: CheckpointDecision | None,
     writer_wait_seconds: float | None,
+    start_by: float | None = None,
 ) -> dict[str, object]:
     if checkpoint_decision is None:
         _commit_maintenance_observations(selected, decisions, reducers)
     else:
-        _write_project_checkpoint(slug, selected, checkpoint_decision, writer_wait_seconds)
+        _write_project_checkpoint(
+            slug, selected, checkpoint_decision, writer_wait_seconds, start_by
+        )
         reducers[str(selected[-1]["state_key"])].commit_observation(
             checkpoint_decision, outcome="checkpoint"
         )
@@ -1616,6 +1665,7 @@ def _persist_or_release(
     checkpoint_decision: CheckpointDecision | None,
     writer_wait_seconds: float | None,
     state_lock_seconds: float = PENDING_STATE_LOCK_SECONDS,
+    start_by: float | None = None,
 ) -> dict[str, object]:
     try:
         return _persist_selected(
@@ -1625,6 +1675,7 @@ def _persist_or_release(
             reducers,
             checkpoint_decision,
             writer_wait_seconds,
+            start_by,
         )
     except Exception:
         _release_pending_claims(queue_key, owner, state_lock_seconds)
@@ -1751,6 +1802,7 @@ def _drain_project_checkpoint_once(
     owner: str,
     writer_wait_seconds: float | None,
     state_lock_seconds: float = PENDING_STATE_LOCK_SECONDS,
+    start_by: float | None = None,
 ) -> bool:
     claimed = _claim_pending(queue_key, owner, state_lock_seconds)
     if claimed is None:
@@ -1771,6 +1823,7 @@ def _drain_project_checkpoint_once(
         decision,
         writer_wait_seconds,
         state_lock_seconds,
+        start_by,
     )
     _commit_or_release(queue_key, owner, selected, committed, state_lock_seconds)
     return True
@@ -1783,10 +1836,12 @@ def _drain_project_checkpoints(
     writer_wait_seconds: float | None = None,
     state_lock_seconds: float = PENDING_STATE_LOCK_SECONDS,
     deadline: float | None = None,
+    start_by: float | None = None,
 ) -> None:
+    """Drain until the queue is empty or `deadline`; no write starts after `start_by`."""
     owner = f"{os.getpid()}:{secrets.token_hex(8)}"
     while _drain_project_checkpoint_once(
-        slug, queue_key, owner, writer_wait_seconds, state_lock_seconds
+        slug, queue_key, owner, writer_wait_seconds, state_lock_seconds, start_by
     ):
         if deadline is not None and time.monotonic() >= deadline:
             return
@@ -1863,9 +1918,17 @@ def _observe_project_checkpoint(
     Only a registered repository has a journal; any other directory enqueues
     nothing and writes nothing (ADR 0002).
     """
+    slug = _enqueue_project_checkpoint(envelope)
+    if slug is None:
+        return
+    _drain_project_checkpoints(slug, slug, writer_wait_seconds=writer_wait_seconds)
+
+
+def _enqueue_project_checkpoint(envelope: EventEnvelope) -> str | None:
+    """Durably enqueue one envelope; the repository's slug, or None when unregistered."""
     placement, _repository = _project_context(envelope)
     if placement is None:
-        return
+        return None
     _store, slug = work_state_store(ROOT, STATE_ROOT, placement)
     project_dir = placement.repository
     session_key = envelope.session or "unknown"
@@ -1876,7 +1939,22 @@ def _observe_project_checkpoint(
         _enqueue_pending_events(state, state_key, slug, pending_events)
 
     update_state(enqueue, lock_timeout=0.5)
-    _drain_project_checkpoints(slug, slug, writer_wait_seconds=writer_wait_seconds)
+    return slug
+
+
+def _drain_before(slug: str, deadline: float) -> None:
+    """Write what the hook can finish before `deadline`; the rest stays pending.
+
+    The next hook of any session in the repository, or the nightly backlog drain,
+    writes what is left.
+    """
+    start_by = deadline - CHECKPOINT_WRITE_SECONDS
+    if time.monotonic() >= start_by:
+        return
+    try:
+        _drain_project_checkpoints(slug, slug, deadline=start_by, start_by=start_by)
+    except CheckpointStartPassed:
+        return
 
 
 def _observed_event_ids(state: Mapping[str, Any], state_key: str) -> set[object]:
@@ -2009,6 +2087,23 @@ def _log_checkpoint_error(error: BaseException) -> None:
             stream.write(f"[{timestamp}] {_checkpoint_log_kind(error)}: {message}\n")
     except Exception:  # noqa: BLE001
         pass
+
+
+def _enqueue_checkpoint_fail_open(envelope: EventEnvelope) -> str | None:
+    try:
+        return _enqueue_project_checkpoint(envelope)
+    except Exception as exc:  # noqa: BLE001
+        _log_checkpoint_error(exc)
+        return None
+
+
+def _drain_checkpoint_fail_open(slug: str | None, deadline: float) -> None:
+    if slug is None:
+        return
+    try:
+        _drain_before(slug, deadline)
+    except Exception as exc:  # noqa: BLE001
+        _log_checkpoint_error(exc)
 
 
 def _observe_checkpoint_fail_open(envelope: EventEnvelope) -> None:
@@ -3428,9 +3523,27 @@ def ingest_event(
     *,
     force_stub: bool = False,
     trigger: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
-    """Apply shared lifecycle persistence policy to a normalized envelope."""
-    _observe_checkpoint_fail_open(envelope)
+    """Apply shared lifecycle persistence policy to a normalized envelope.
+
+    A hook passes its `deadline`: the checkpoint is enqueued first and written after
+    the capture, within what is left (`_drain_before`). Session start keeps the
+    checkpoint first, because the context it prints reads that state.
+    """
+    if deadline is None or envelope.event_type == "session_start":
+        _observe_checkpoint_fail_open(envelope)
+        return _ingest_handled(envelope, force_stub, trigger)
+    slug = _enqueue_checkpoint_fail_open(envelope)
+    try:
+        return _ingest_handled(envelope, force_stub, trigger)
+    finally:
+        _drain_checkpoint_fail_open(slug, deadline)
+
+
+def _ingest_handled(
+    envelope: EventEnvelope, force_stub: bool, trigger: str | None
+) -> dict[str, Any]:
     payload = _canonical_capture_payload(envelope)
     placement, project_dir = _project_context(envelope)
     result = _ingest_result(placement, payload)
@@ -3570,25 +3683,38 @@ def _delegate_forwards_stdout(name: str) -> bool:
     }
 
 
-def _run_own_delegate(args: argparse.Namespace, envelope: EventEnvelope) -> None:
+def _run_own_delegate(
+    args: argparse.Namespace, envelope: EventEnvelope, deadline: float
+) -> None:
     """A delegate that is not this event's capture delegate speaks for itself."""
-    _observe_checkpoint_fail_open(envelope)
-    _run_delegate(
-        args.delegate,
-        _canonical_capture_payload(envelope),
-        forward_stdout=_delegate_forwards_stdout(args.delegate),
-    )
+    if envelope.event_type == "session_start":
+        _observe_checkpoint_fail_open(envelope)
+        slug = None
+    else:
+        slug = _enqueue_checkpoint_fail_open(envelope)
+    try:
+        _run_delegate(
+            args.delegate,
+            _canonical_capture_payload(envelope),
+            forward_stdout=_delegate_forwards_stdout(args.delegate),
+        )
+    finally:
+        _drain_checkpoint_fail_open(slug, deadline)
 
 
 def _dispatch_cli_event(
-    args: argparse.Namespace, envelope: EventEnvelope | None
+    args: argparse.Namespace,
+    envelope: EventEnvelope | None,
+    started: float | None = None,
 ) -> dict[str, object] | None:
     if envelope is None:
         return None
+    started = time.monotonic() if started is None else started
+    deadline = hook_deadline(envelope.event_type, started)
     if args.delegate and args.delegate != CAPTURE_DELEGATES.get(envelope.event_type):
-        _run_own_delegate(args, envelope)
+        _run_own_delegate(args, envelope, deadline)
         return None
-    result = ingest_event(envelope)
+    result = ingest_event(envelope, deadline=deadline)
     return _legacy_output(args.source, envelope.event_type, result)
 
 
@@ -3617,12 +3743,13 @@ def _require_named_event(args: argparse.Namespace) -> None:
 
 
 def _run_cli_event(args: argparse.Namespace) -> dict[str, object] | None:
+    started = time.monotonic()
     _require_named_event(args)
     if _is_memory_automation():
         return None
     raw = _apply_checkpoint_arg(_read_hook_input(), args.checkpoint_type)
     envelope = normalize_occurrence_event(args.source, args.event, raw)
-    return _dispatch_cli_event(args, envelope)
+    return _dispatch_cli_event(args, envelope, started)
 
 
 def _failed_operation(args: argparse.Namespace | None) -> str:
