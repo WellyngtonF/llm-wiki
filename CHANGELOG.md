@@ -96,6 +96,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   refused as a duplicate id on every retry. A claim the target already holds with
   the same fingerprint is now dropped and named in the drop log; a different claim
   under a held id is still refused. Same note.
+- **Evidence in a shared second resolves as it was bound.** Several agents writing
+  one daily share seconds, and a block id is the entry's time. The binder settled a
+  shared second by the quote; the resolver refused it as ambiguous, so every
+  critique failed and the busy day compiled nothing. The resolver now applies the
+  binder's rule. Same note.
 - **A hook never starts a write it cannot finish.** Hooks waited up to 10 s for the
   global writer gate inside a 5 s host timeout. The one cancelled mid-write held the
   gate until its 30 s lease lapsed, the hooks behind it did the same, and the compile

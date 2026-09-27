@@ -1400,8 +1400,17 @@ def _require_utf8(content: bytes, message: str) -> None:
 
 
 def _sole_block_span(content: bytes, ref: EvidenceRef) -> tuple[int, int]:
-    """The one entry this reference names, and proof the span sits inside it."""
+    """The one entry this reference names, and proof the span sits inside it.
+
+    Entries sharing one id are told apart the way the compile's binder tells them
+    apart: the one holding the cited bytes exactly once, when only one does. See
+    knowledge/notes/daily-entry-quote-anchor-decision.md and
+    docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md.
+    """
     matching = [item for item in daily_entries(content) if item[0] == ref.block_id]
+    if len(matching) > 1:
+        quote = content[ref.byte_start : ref.byte_end]
+        matching = [item for item in matching if content.count(quote, item[1], item[2]) == 1]
     if len(matching) != 1:
         raise EvidenceResolutionError("evidence block is ambiguous or missing")
     _block_id, block_start, block_end = matching[0]

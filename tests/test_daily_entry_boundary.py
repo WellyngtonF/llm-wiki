@@ -197,6 +197,35 @@ def test_a_captured_entry_binds_end_to_end(vault) -> None:
     assert "block:10:00:00" in bindings[0]["reference"]
 
 
+def test_a_binding_in_a_shared_second_resolves_as_it_was_bound(vault) -> None:
+    """The resolver settles a shared timestamp by the quote, as the binder did.
+
+    On 2026-09-26 three agents wrote 33 shared seconds into one daily; the binder
+    accepted evidence in them and the resolver refused every one, so the critique
+    of each batch failed and the day compiled nothing.
+    """
+    import compile_memory
+    from evidence_resolver import EvidenceRef, EvidenceResolver
+
+    vault.write_text(
+        "# Daily Session Memory — 2026-07-14\n"
+        + _capture("ab", "10:00:00", "a durable fact")
+        + _capture("cd", "10:00:00", "another agent in the same second"),
+        encoding="utf-8",
+    )
+    inputs = compile_memory.snapshot_compile_inputs([vault])
+    quote = "`[10:00:00] prompt | s1` another agent in the same second"
+    _normalized, [binding] = compile_memory._validate_semantic_operation(
+        _operation(quote), inputs
+    )
+
+    resolved = EvidenceResolver(vault.parents[2]).resolve(
+        EvidenceRef.parse(binding["reference"])
+    )
+
+    assert resolved.bytes == quote.encode("utf-8")
+
+
 def test_a_shared_timestamp_is_settled_by_the_quote(tmp_path):
     """The timestamp addresses the entry; the quote proves which one.
 

@@ -72,6 +72,22 @@ now drops a claim the target's ledger already holds with that fingerprint and na
 drop (`claim already in the target ledger`) in the drop log. The ledger keeps the first
 record and its evidence. A held id with other semantics is still refused.
 
+## The fourth refusal: a busy day shares its seconds
+
+The nightly pass of 2026-09-26 compiled 2026-09-25 and failed on 2026-09-26 with `no LLM
+provider produced a validated compile plan: critique:…:validation_error` three times.
+Every critique had failed on `EvidenceResolutionError: evidence block is ambiguous or
+missing`. Three agents had written 1 090 entries into that daily, and 33 seconds were
+declared by two or three entries each. The day before had one such second.
+
+A block id is the entry's time. The compile's binder already settles a shared second by
+the quote (`compile_memory._evidence_block`, the quote-anchor decision): of the entries
+declaring the timestamp, the one holding the quote exactly once, when only one does. The
+resolver that proves a bound reference afterwards (`evidence_resolver._sole_block_span`)
+still demanded a unique id, so it refused what the binder had bound. It now applies the
+binder's rule to the cited bytes. A span whose bytes occur in two entries of one second is
+still refused, as before.
+
 ## Side observation, not changed
 
 After a failed session-triggered compile, `run/compile.pid` named a dead process. The
