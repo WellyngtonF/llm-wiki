@@ -1280,6 +1280,48 @@ def test_a_claim_the_page_already_holds_is_not_written_twice(vault, monkeypatch)
     assert compile_memory.DROPPED_CLAIMS[-1]["detail"] == "claim already in the target ledger"
 
 
+def test_a_paraphrase_of_a_held_claim_is_not_added_beside_it(vault, monkeypatch):
+    """The same line compiled again comes back in other words; the page keeps one."""
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+
+    held = _claim_record(
+        root, claim_id="held", value="green",
+        text="A durable exact-byte observation.", authority="ai-derived",
+    )
+    page = root / "knowledge/notes/existing.md"
+    page.write_bytes(_ledger_page("Existing", [held]))
+    reworded = _claim_record(
+        root, claim_id="reworded", value="green, durably",
+        text="A durable exact-byte observation.", authority="ai-derived",
+    )
+    fresh = _about(
+        _claim_record(
+            root, claim_id="fresh", value="blue",
+            text="The prior state is blue.", authority="ai-derived",
+        ),
+        "other",
+    ) | {"id": "fresh"}
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    result = compile_memory.apply_compile_plan(
+        inputs,
+        {
+            "schema_version": "compile-plan/v2",
+            "operations": [_operation("replace", "existing", [reworded, fresh])],
+        },
+        action_key="a1" * 32, trigger="manual",
+        coordinator=MarkdownCoordinator(root, state_root),
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
+    assert (result.state, _ledger_lifecycles(page.read_bytes())) == (
+        "committed", {"held": "active", "fresh": "active"}
+    )
+
+
 def test_a_different_claim_under_a_held_id_is_still_refused(vault, monkeypatch):
     root, state_root = vault
     daily = _daily(root)

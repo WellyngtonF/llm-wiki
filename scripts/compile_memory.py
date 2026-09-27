@@ -3511,23 +3511,31 @@ def _claims_new_to(
     """A claim the target's ledger already holds is that claim, not a second one.
 
     A daily rewritten after its compile is compiled again, and the same line yields
-    the same claim id with evidence naming the daily's new digest. The same id with
-    other semantics is still a conflict. See
-    docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md.
+    the same claim id with evidence naming the daily's new digest, or the same fact
+    in other words. The same id with other semantics is still a conflict. See
+    docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md and
+    docs/research/2026-09-27-a-paraphrase-is-not-a-contradiction.md.
     """
     match = CLAIM_LEDGER_RE.search(content)
     if match is None:
         return list(claims)
-    held = {str(item["id"]): item for item in json.loads(match[2])["claims"]}
+    ledger = json.loads(match[2])["claims"]
+    held = {str(item["id"]): item for item in ledger}
+    lines = {
+        (item.get("subject"), item.get("evidence", {}).get("sha256"))
+        for item in ledger
+        if item.get("lifecycle") == "active"
+    }
     fresh = []
     for record in claims:
         existing = held.get(str(record["id"]))
-        if existing is None:
-            fresh.append(record)
-        elif existing.get("fingerprint") == record.get("fingerprint"):
+        if existing is not None and existing.get("fingerprint") != record.get("fingerprint"):
+            raise ValueError("compile claim id already exists in target ledger")
+        line = (record.get("subject"), record.get("evidence", {}).get("sha256"))
+        if existing is not None or line in lines:
             _report_dropped_claim(Path(path).stem, "claim already in the target ledger")
         else:
-            raise ValueError("compile claim id already exists in target ledger")
+            fresh.append(record)
     return fresh
 
 

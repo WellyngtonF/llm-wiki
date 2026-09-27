@@ -171,6 +171,20 @@ def _same_value(first: Mapping[str, object], second: Mapping[str, object]) -> bo
     return canonical_json_bytes(first.get("value")) == canonical_json_bytes(second.get("value"))
 
 
+def _same_line(first: Mapping[str, object], second: Mapping[str, object]) -> bool:
+    """Both claims were lifted from the same quoted bytes.
+
+    One line says one thing; two wordings of it differ in value, not in fact. See
+    docs/research/2026-09-27-a-paraphrase-is-not-a-contradiction.md.
+    """
+    first_evidence = first.get("evidence")
+    second_evidence = second.get("evidence")
+    if not isinstance(first_evidence, Mapping) or not isinstance(second_evidence, Mapping):
+        return False
+    digest = first_evidence.get("sha256")
+    return bool(digest) and digest == second_evidence.get("sha256")
+
+
 def _same_qualifier_scope(
     first: Mapping[str, object], second: Mapping[str, object]
 ) -> bool:
@@ -183,6 +197,7 @@ _DETERMINISTIC_RULES: tuple[tuple[Callable[..., bool], str | None], ...] = (
     (lambda new, old: old.get("lifecycle") != "active", "compatible"),
     (lambda new, old: new["fingerprint"] == old["fingerprint"], "equivalent"),
     (lambda new, old: new["subject"] != old["subject"], "unrelated"),
+    (_same_line, "equivalent"),
     (lambda new, old: new["relation"] != old["relation"], None),
     (
         lambda new, old: not intervals_overlap(new["validity"], old["validity"]),

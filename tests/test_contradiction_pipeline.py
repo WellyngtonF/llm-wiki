@@ -461,9 +461,13 @@ def test_all_compatible_supersession_mutations_are_sorted_and_conflicts_quaranti
         ("knowledge/notes/z.md", "z"),
     ]
 
+    # A refinement from another line: the same line would be the same fact.
+    elsewhere = claim("red", claim_id="r", start=None).record
     refinement = IndexedClaim(
         "knowledge/notes/r.md",
-        claim("red", claim_id="r", start=None),
+        NormalizedClaim(
+            {**elsewhere, "evidence": {**elsewhere["evidence"], "sha256": sha256_bytes(b"elsewhere")}}
+        ),
     )
     conflicted = ContradictionPipeline(evaluators=()).assess(
         claim("red"), candidates=[candidates[0], refinement]
@@ -790,3 +794,57 @@ def test_assess_raw_runs_split_extract_verify_normalize_in_order():
 
     assert len(results) == 1
     assert pipeline.claim_pipeline.calls == ["split", "extract", "verify", "normalize"]
+
+
+def _quoting(new: NormalizedClaim, old: IndexedClaim) -> NormalizedClaim:
+    """`new`, extracted from the very line `old` was extracted from."""
+    return NormalizedClaim({**new.record, "evidence": dict(old.claim.record["evidence"])})
+
+
+def test_a_paraphrase_of_the_same_line_is_the_same_fact_not_a_contradiction():
+    """Two wordings lifted from one quote differ in value, not in what they say.
+
+    All 18 conflicts in the owner's quarantine on 2026-09-27 were this: "sandbox-only"
+    against "for sandbox use only", from one line. See
+    docs/research/2026-09-27-a-paraphrase-is-not-a-contradiction.md.
+    """
+    from contradiction_pipeline import ContradictionPipeline
+
+    old = indexed("for sandbox use only", authority="web")
+    result = ContradictionPipeline().assess(
+        _quoting(claim("sandbox-only", authority="user"), old), candidates=[old]
+    )
+
+    assert (result.contradiction_class, result.recommendation, result.lifecycle_mutations) == (
+        "equivalent", "keep-both", ()
+    )
+
+
+def test_a_paraphrase_under_another_relation_is_not_sent_to_review():
+    from contradiction_pipeline import ContradictionPipeline
+
+    old = indexed("complete when every document is found", relation="has-value")
+    result = ContradictionPipeline().assess(
+        _quoting(claim("complete only when every document is found"), old), candidates=[old]
+    )
+
+    assert (result.contradiction_class, result.recommendation) == ("equivalent", "keep-both")
+
+
+def test_a_different_line_saying_otherwise_is_still_a_contradiction():
+    from contradiction_pipeline import ContradictionPipeline
+
+    result = ContradictionPipeline().assess(
+        claim("red", authority="user"), candidates=[indexed("blue", authority="web")]
+    )
+
+    assert result.contradiction_class == "contradiction"
+
+
+def test_the_same_line_about_another_subject_stays_unrelated():
+    from contradiction_pipeline import ContradictionPipeline
+
+    old = indexed("blue", subject="other")
+    result = ContradictionPipeline().assess(_quoting(claim("red"), old), candidates=[old])
+
+    assert result.contradiction_class == "unrelated"

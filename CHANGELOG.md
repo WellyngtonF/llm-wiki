@@ -114,6 +114,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   sixteen minutes died on one long holder. A model call is now refused only when
   this thread holds the gate, and publication waits up to 120 s within the compile's
   deadline. See `docs/research/2026-09-27-a-busy-gate-does-not-fail-the-compile.md`.
+- **A paraphrase is not a contradiction.** Two claims lifted from the same quoted line
+  about the same subject are the same fact, whatever their wording: they no longer
+  supersede one another or go to quarantine, and a page does not gain a reworded copy
+  of a claim it already holds from that line. All 18 conflicts in the owner's quarantine
+  were such paraphrases. See
+  `docs/research/2026-09-27-a-paraphrase-is-not-a-contradiction.md`.
 
 ### Changed
 
