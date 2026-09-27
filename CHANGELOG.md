@@ -108,6 +108,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   runs its capture, and writes the checkpoint only if it can finish before the host's
   timeout; otherwise the event stays pending for the next hook or the nightly. See
   `docs/research/2026-09-26-a-hook-never-starts-a-write-it-cannot-finish.md`.
+- **A busy gate does not fail the compile.** Before each model call the compile
+  waited 10 s for any process to release the global writer gate and then refused,
+  and its publication gave up after the same 10 s. A compile that had planned for
+  sixteen minutes died on one long holder. A model call is now refused only when
+  this thread holds the gate, and publication waits up to 120 s within the compile's
+  deadline. See `docs/research/2026-09-27-a-busy-gate-does-not-fail-the-compile.md`.
 
 ### Changed
 

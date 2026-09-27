@@ -145,6 +145,12 @@ COMPILE_PLAN_SCHEMA = Path(__file__).with_name("schemas") / "compile-plan-v2.jso
 # a vault that loses four in a row has a busier problem than a retry. See
 # `_published`.
 COMPILE_PUBLICATION_ATTEMPTS = 4
+# How long a compile's publication waits for the global writer gate. A hook
+# waits `markdown_busy_ms` (10 s) because a person is waiting on it; a compile
+# is unattended and has already spent minutes planning, and on the owner's vault
+# 2026-09-26 the gate was held 27-42 s at a time. Bounded by the compile's own
+# deadline. See `docs/research/2026-09-27-a-busy-gate-does-not-fail-the-compile.md`.
+COMPILE_PUBLICATION_GATE_SECONDS = 120.0
 COMPILE_RECEIPT_SCHEMA = Path(__file__).with_name("schemas") / "compile-receipt-v2.json"
 COMPILE_RECEIPT_V3_SCHEMA = Path(__file__).with_name("schemas") / "compile-receipt-v3.json"
 # One malformed generation used to lose a whole compile. Current practice caps
@@ -1784,22 +1790,22 @@ def _provider_budget(provider: object) -> dict[str, object]:
 
 
 def _assert_external_work_allowed(coordinator: MarkdownCoordinator) -> None:
+    """Never call a model while this thread owns the gate, through any coordinator.
+
+    Another process's write is no reason to wait: the model call takes no lock,
+    and the publication after it waits for the gate itself. Refusing after 10 s
+    of someone else's writes lost whole compiles on a busy vault. See
+    `docs/research/2026-09-27-a-busy-gate-does-not-fail-the-compile.md`.
+    """
     coordinator.assert_external_work_allowed()
-    deadline = time.monotonic() + 10.0
-    while True:
-        with coordinator._connect() as database:
-            owner = database.execute(
-                "SELECT process_id, thread_id FROM writer_owners WHERE gate_name = 'global'"
-            ).fetchone()
-        if owner is None:
-            return
-        # A separate capture may be finishing a short write. Wait outside the
-        # gate; never call a model while this thread owns it through another
-        # coordinator, and never steal/delete a persisted ownership record.
-        ours = owner["process_id"] == os.getpid() and owner["thread_id"] == threading.get_ident()
-        if ours or time.monotonic() >= deadline:
-            raise RuntimeError("external LLM work is forbidden during persisted writer ownership")
-        time.sleep(0.05)
+    with coordinator._connect() as database:
+        owner = database.execute(
+            "SELECT process_id, thread_id FROM writer_owners WHERE gate_name = 'global'"
+        ).fetchone()
+    if owner is None:
+        return
+    if owner["process_id"] == os.getpid() and owner["thread_id"] == threading.get_ident():
+        raise RuntimeError("external LLM work is forbidden during persisted writer ownership")
 
 
 def _failure_lineage(stage: str, descriptor: object, code: str) -> str:
@@ -4016,9 +4022,13 @@ def _published_once(
     cancelled: Callable[[], bool] | None,
 ) -> CompileApplyResult:
     publication.assess_claims()
-    with coordinator.writer_gate(owner=owner):
+    with coordinator.writer_gate(owner=owner, wait_seconds=_publication_gate_wait(deadline)):
         coordinator.recover(owner=owner, deadline=deadline, cancelled=cancelled)
         return publication.publish()
+
+
+def _publication_gate_wait(deadline: float) -> float:
+    return max(0.0, min(COMPILE_PUBLICATION_GATE_SECONDS, deadline - time.monotonic()))
 
 
 def _published(
