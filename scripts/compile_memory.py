@@ -70,7 +70,6 @@ from compile_cache import (  # noqa: E402
 from context_budget import ContextBudget, TokenCounter, count_tokens  # noqa: E402
 from contradiction_pipeline import (  # noqa: E402
     ContradictionPipeline,
-    StaleLifecycleTarget,
     default_secondary_search,
     review_secondary_context,
 )
@@ -2844,8 +2843,7 @@ DROPPED_CLAIMS: list[dict[str, str]] = []
 
 
 # Issue #26.2: `done` and `ok` said the same thing whether pages were published
-# or only a candidate was quarantined. Each batch returns what it did.
-QUARANTINE_OPERATION_PREFIX = "compile-quarantine:"
+# or nothing was. Each batch returns what it did.
 
 
 @dataclass(frozen=True)
@@ -2860,19 +2858,12 @@ class BatchOutcome:
 def _committed_outcome(result: CompileApplyResult) -> BatchOutcome:
     """Name what this batch did, in the words the operator needs (#26.2)."""
     paths = len(result.touched)
-    if result.operation_id.startswith(QUARANTINE_OPERATION_PREFIX):
-        print(
-            f"compile_memory: batch quarantined: {paths} candidate(s) under "
-            "knowledge/inbox/claims/, no page published; the daily stays "
-            "pending until the candidate is reviewed."
-        )
-        return BatchOutcome(0, "quarantined", paths)
     print(f"compile_memory: batch published {paths} page(s).")
     return BatchOutcome(0, "published", paths)
 
 
 def compile_outcome(outcomes: Sequence[BatchOutcome]) -> str:
-    """One word for the run: published, quarantined, partial, or nothing."""
+    """One word for the run: published, partial (more than one kind), or nothing."""
     kinds = {item.outcome for item in outcomes if item.outcome}
     if not kinds:
         return "nothing"
@@ -4205,7 +4196,12 @@ class _ApplyPlan:
         """Each claim also sees the claims this same batch proposed before it."""
         normalized = NormalizedClaim(record)
         known = tuple(self.claim_index.candidates(normalized)) + tuple(candidates)
-        assessment = pipeline.assess(normalized, candidates=known or None, commit=False)
+        # Two agreeing, supported, high-confidence evaluations may settle a claim as
+        # compatible or a refinement; a semantic contradiction still never supersedes.
+        # The owner's decision of 2026-09-27: docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md.
+        assessment = pipeline.assess(
+            normalized, candidates=known or None, commit=False, benchmark_gate=True
+        )
         candidates.append(IndexedClaim(path, normalized, ledger_backed=False))
         return assessment
 
@@ -4215,16 +4211,13 @@ class _ApplyPlan:
         committed = self._existing_receipts()
         if committed is not None:
             return committed
-        if self._quarantined():
-            return self._commit_quarantine()
         return self._publish_changes()
 
     def _publish_changes(self) -> CompileApplyResult:
         self._build_changes()
         self._bind_operation_id()
-        quarantine = self._apply_claim_policy()
-        if quarantine is not None:
-            return quarantine
+        self._apply_claim_policy()
+        self._report_doubtful_claims()
         self._append_index_and_log()
         self._append_receipts()
         return self._commit()
@@ -4260,81 +4253,19 @@ class _ApplyPlan:
             for source in self.batch.manifest
         ]
 
-    def _quarantined(self) -> bool:
-        return any(
-            assessment.recommendation == "quarantine"
+    def _report_doubtful_claims(self) -> None:
+        """A doubtful claim rides on its page, marked; the batch and the day go on."""
+        doubtful = sum(
+            1
             for _pipeline, assessments in self.claim_groups
             for assessment in assessments
+            if assessment.recommendation == "quarantine"
         )
-
-    def _commit_quarantine(self) -> CompileApplyResult:
-        """A quarantined batch publishes candidates only, and no pages."""
-        changes: list[MarkdownChange] = []
-        paths: list[str] = []
-        present: list[str] = []
-        for pipeline, assessments in self.claim_groups:
-            policy_changes, _preconditions, candidate_paths, present_paths = (
-                pipeline.plan_candidate_changes(_forced_quarantine(assessments))
+        if doubtful:
+            print(
+                f"compile_memory: {doubtful} doubtful claim(s) kept on their page as "
+                "`quarantined`, out of retrieval; nothing awaits review."
             )
-            changes.extend(policy_changes)
-            paths.extend(candidate_paths)
-            present.extend(present_paths)
-        if not changes:
-            return self._already_quarantined(present)
-        self.claim_groups[0][0].ensure_candidate_parent()
-        return self._commit_quarantine_changes(changes, paths)
-
-    def _already_quarantined(self, present: list[str]) -> CompileApplyResult:
-        """Nothing new to write: this attempt's own commit, or the candidates of an earlier one."""
-        if not present:
-            raise ValueError("quarantined compile batch produced no candidates")
-        operation_id = self._quarantine_operation_id(present)
-        if self.coordinator.committed_attempt(operation_id) is None:
-            raise CandidatesAlreadyQuarantined(present)
-        return self._quarantine_result(operation_id, present)
-
-    def _quarantine_operation_id(self, paths: list[str]) -> str:
-        return "compile-quarantine:" + sha256_bytes(
-            canonical_json_bytes(
-                {
-                    "action_key": self.action_key,
-                    "source_digests": self.source_digests,
-                    "candidate_paths": sorted(paths),
-                }
-            )
-        )
-
-    def _quarantine_result(self, operation_id: str, paths: list[str]) -> CompileApplyResult:
-        committed, sequence = _transaction_authority(self.coordinator, operation_id)
-        return CompileApplyResult(
-            committed.id,
-            operation_id,
-            committed.state,
-            tuple(sorted(paths)),
-            sequence,
-            committed.updated_at,
-            self.action_key,
-        )
-
-    def _commit_quarantine_changes(
-        self, changes: list[MarkdownChange], paths: list[str]
-    ) -> CompileApplyResult:
-        operation_id = self._quarantine_operation_id(paths)
-        transaction = self.coordinator.prepare(
-            sorted(changes, key=lambda item: item.path),
-            operation_id=operation_id,
-            content_guard="model_output",
-            preconditions={
-                **{path: "absent" for path in paths},
-                "claim_tree_manifest": snapshot_claim_tree(ROOT),
-            },
-            deadline=self.deadline,
-            cancelled=self.cancelled,
-        )
-        self.coordinator.apply(
-            transaction.id, deadline=self.deadline, cancelled=self.cancelled
-        )
-        return self._quarantine_result(operation_id, paths)
 
     # -- the pages themselves ------------------------------------------------
 
@@ -4503,21 +4434,17 @@ class _ApplyPlan:
             self.action_key, self.batch.manifest_sha256, self.dispositions
         )
 
-    def _apply_claim_policy(self) -> CompileApplyResult | None:
-        """Lifecycle writes join this transaction, or the batch is quarantined."""
-        candidate_needed = False
+    def _apply_claim_policy(self) -> None:
+        """Lifecycle writes join this transaction; a doubtful claim writes no candidate file.
+
+        A supersession target that changed since the assessment raises
+        `StaleLifecycleTarget`: the batch commits nothing and the next run assesses again.
+        """
         for pipeline, assessments in self.claim_groups:
-            try:
-                changes, preconditions, candidate_paths = pipeline.plan_changes(
-                    assessments, self._after_images()
-                )
-            except StaleLifecycleTarget:
-                return self._commit_quarantine()
-            candidate_needed = candidate_needed or bool(candidate_paths)
+            changes, preconditions, _created = pipeline.plan_changes(
+                assessments, self._after_images(), candidates=False
+            )
             self._add_policy_changes(changes, preconditions)
-        if candidate_needed:
-            self.claim_groups[0][0].ensure_candidate_parent()
-        return None
 
     def _after_images(self) -> dict[str, bytes]:
         return {
@@ -4758,26 +4685,6 @@ def _receipt_authority(receipts: Sequence[Mapping[str, object]]) -> tuple[str, s
     if len(ids) != 1 or len(keys) != 1:
         raise ValueError("compile receipts disagree about transaction authority")
     return ids.pop(), keys.pop()
-
-
-class CandidatesAlreadyQuarantined(Exception):
-    """Every candidate of a quarantined batch already awaits review; nothing new to write."""
-
-    def __init__(self, paths: Sequence[str]) -> None:
-        super().__init__(f"{len(paths)} candidate(s) already await review")
-        self.paths = tuple(paths)
-
-
-def _forced_quarantine(assessments: Sequence[object]) -> tuple[object, ...]:
-    return tuple(
-        replace(
-            assessment,
-            recommendation="quarantine",
-            lifecycle_mutations=(),
-            candidate_path=None,
-        )
-        for assessment in assessments
-    )
 
 
 def _update_section(
@@ -5629,8 +5536,6 @@ def _apply_batch(
         )
     except TimeoutError:
         raise
-    except CandidatesAlreadyQuarantined as already:
-        return _still_quarantined_outcome(already)
     except Exception as exc:  # noqa: BLE001 - no diagnostic state is a commit receipt
         return BatchOutcome(
             _failed_compile(args, batch.inputs, exc, prefix="transaction not committed: ")
@@ -5638,16 +5543,6 @@ def _apply_batch(
     _require_compile_active(deadline, cancelled)
     _record_batch_diagnostics(batch, result, args, coordinator)
     return _committed_outcome(result)
-
-
-def _still_quarantined_outcome(already: CandidatesAlreadyQuarantined) -> BatchOutcome:
-    """The same claims were quarantined by an earlier attempt: no commit, the daily stays pending."""
-    print(
-        f"compile_memory: batch still quarantined: {len(already.paths)} candidate(s) under "
-        "knowledge/inbox/claims/ already await review, no page published; the daily "
-        "stays pending until the candidate is reviewed."
-    )
-    return BatchOutcome(0, "quarantined", 0)
 
 
 def _transactional_owner(

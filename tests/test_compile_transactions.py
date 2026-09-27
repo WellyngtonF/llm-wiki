@@ -649,7 +649,13 @@ def _resolved_evidence_texts(root: Path, page: str) -> list:
     return sorted(resolver.resolve(item).bytes.decode("utf-8") for item in references)
 
 
-def test_quarantined_compile_publishes_only_idempotent_candidates_and_stays_pending(vault):
+def test_a_doubtful_claim_rides_on_its_page_and_the_day_compiles(vault, capsys):
+    """A claim the policy cannot settle no longer holds its batch back for a person.
+
+    The page publishes, the claim is kept on it as `quarantined`, out of retrieval, and
+    no review file is written. See
+    docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md.
+    """
     root, state_root = vault
     daily = _daily(root)
     import compile_memory
@@ -700,54 +706,16 @@ def test_quarantined_compile_publishes_only_idempotent_candidates_and_stays_pend
     )
 
     page = root / "knowledge/notes/exact-byte-pattern.md"
-    receipt = root / f"knowledge/daily/receipts/{inputs.dailies[0].sha256}.md"
+    index.rebuild()
     assert (
-        page.exists(),
-        receipt.exists(),
-        b"exact-byte-pattern" in (root / "knowledge/index.md").read_bytes(),
-        b"Use an immutable snapshot" in (root / "knowledge/log.md").read_bytes(),
-        page in _collected_pages(root),
-    ) == (False, False, False, False, False)
-    candidates = list((root / "knowledge/inbox/claims").glob("*.md"))
-    transaction = coordinator._record_for_operation_id(result.operation_id)
-    indexed_pages = _candidate_pages(index, NormalizedClaim(new))
-    selected = compile_memory.select_dailies(
-        Namespace(file=None), {}, coordinator=coordinator
-    )
-    assert (
-        len(candidates),
-        transaction is not None,
-        result.operation_id.startswith("compile-quarantine:"),
-        _operation_paths(transaction),
-        "knowledge/notes/exact-byte-pattern.md" in indexed_pages,
-        selected,
-    ) == (
-        1,
-        True,
-        True,
-        {candidates[0].relative_to(root).as_posix()},
-        False,
-        [daily],
-    )
-
-    # Another session can add a note before this pending batch is retried.
-    # The already committed candidate must remain idempotent even though the
-    # claim-tree precondition for a NEW publication would now be different.
-    (root / "knowledge/notes/unrelated.md").write_text(
-        "---\ntype: concept\n---\n# Unrelated\nA separate project.\n", encoding="utf-8"
-    )
-    retried = compile_memory.apply_compile_plan(
-        inputs,
-        plan,
-        action_key="9" * 64,
-        trigger="manual",
-        coordinator=coordinator,
-        completed_at="2026-07-14T12:00:00Z",
-    )
-    assert (
-        retried.transaction_id,
-        len(list((root / "knowledge/inbox/claims").glob("*.md"))),
-    ) == (result.transaction_id, 1)
+        result.operation_id.startswith("compile:"),
+        _ledger_lifecycles(page.read_bytes()),
+        _ledger_lifecycles(existing.read_bytes()),
+        list((root / "knowledge/inbox/claims").glob("*.md")),
+        "knowledge/notes/exact-byte-pattern.md" in _candidate_pages(index, NormalizedClaim(new)),
+        (root / f"knowledge/daily/receipts/{inputs.dailies[0].sha256}.md").exists(),
+    ) == (True, {"new": "quarantined"}, {"old": "active"}, [], False, True)
+    assert "1 doubtful claim(s) kept on their page" in capsys.readouterr().out
 
 
 def _operation_paths(transaction) -> set:
@@ -770,61 +738,7 @@ def _collected_pages(root: Path) -> list:
         search_memory.KNOWLEDGE_DIR = original
 
 
-def test_a_recompile_that_quarantines_the_same_claim_again_does_not_fail(vault, capsys):
-    """2026-09-11: the next plan for a pending quarantined daily differed elsewhere
-    (new action key) but proposed the same claim; the candidate create met the file
-    written on 2026-09-07 and the whole compile failed with FileExistsError."""
-    root, state_root = vault
-    daily = _daily(root)
-    import compile_memory
-    from claims import ClaimIndex
-
-    old = _claim_record(root, claim_id="old", value="blue", text="The prior state is blue.", authority="user")
-    (root / "knowledge/notes/existing.md").write_bytes(
-        b"---\ntype: concept\n---\n# Existing\n\n## Claims\n```json\n"
-        + canonical_json_bytes({"schema_version": "claim-ledger/v1", "claims": [old]})
-        + b"\n```\n"
-    )
-    new = _claim_record(root, claim_id="new", value="red", text="A durable exact-byte observation.", authority="inferred")
-    operation = json.loads(str(_semantic_plan()["operations"][0]["content"]))
-    operation["claims"] = [new]
-    inputs = compile_memory.snapshot_compile_inputs([daily])
-    plan = {
-        "schema_version": "compile-plan/v2",
-        "operations": [{
-            "kind": "create",
-            "path": "knowledge/notes/exact-byte-pattern.md",
-            "content": canonical_json_bytes(operation).decode(),
-        }],
-    }
-    ClaimIndex(state_root, vault=root).rebuild()
-    coordinator = MarkdownCoordinator(root, state_root)
-    compile_memory.apply_compile_plan(
-        inputs, plan, action_key="9" * 64, trigger="manual",
-        coordinator=coordinator, completed_at="2026-07-14T12:00:00Z",
-    )
-    candidates = sorted((root / "knowledge/inbox/claims").glob("*.md"))
-    before = candidates[0].read_bytes()
-
-    with pytest.raises(compile_memory.CandidatesAlreadyQuarantined) as raised:
-        compile_memory.apply_compile_plan(
-            inputs, plan, action_key="8" * 64, trigger="manual",
-            coordinator=coordinator, completed_at="2026-07-15T12:00:00Z",
-        )
-
-    selected = compile_memory.select_dailies(Namespace(file=None), {}, coordinator=coordinator)
-    assert (
-        raised.value.paths,
-        sorted((root / "knowledge/inbox/claims").glob("*.md")),
-        candidates[0].read_bytes(),
-        selected,
-    ) == ((candidates[0].relative_to(root).as_posix(),), candidates, before, [daily])
-    outcome = compile_memory._still_quarantined_outcome(raised.value)
-    assert (outcome.status, outcome.outcome, outcome.paths) == (0, "quarantined", 0)
-    assert "batch still quarantined: 1 candidate(s)" in capsys.readouterr().out
-
-
-def test_compile_batch_claims_compare_incrementally_and_mutual_conflict_quarantines(vault):
+def test_compile_batch_claims_compare_incrementally_and_mutual_conflict_is_kept_doubtful(vault):
     root, state_root = vault
     daily = _daily(root)
     import compile_memory
@@ -854,8 +768,9 @@ def test_compile_batch_claims_compare_incrementally_and_mutual_conflict_quaranti
         completed_at="2026-07-14T12:00:00Z",
     )
 
-    assert not (root / "knowledge/notes/exact-byte-pattern.md").exists()
-    assert len(list((root / "knowledge/inbox/claims").glob("*.md"))) == 2
+    page = (root / "knowledge/notes/exact-byte-pattern.md").read_bytes()
+    assert _ledger_lifecycles(page) == {"first": "active", "second": "quarantined"}
+    assert not list((root / "knowledge/inbox/claims").glob("*.md"))
 
 
 def test_duplicate_claim_ids_are_rejected_before_any_transaction(vault):
@@ -1040,7 +955,7 @@ def test_a_tree_that_never_stops_moving_still_refuses_the_compile(vault, monkeyp
     assert "claim_tree_manifest" in json.loads(row["preconditions_json"])
 
 
-def test_compile_same_id_replacement_after_assessment_quarantines_without_mutation(
+def test_a_supersession_target_changed_after_assessment_commits_nothing(
     vault, monkeypatch
 ):
     root, state_root = vault
@@ -1108,17 +1023,17 @@ def test_compile_same_id_replacement_after_assessment_quarantines_without_mutati
     monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
     coordinator = MarkdownCoordinator(root, state_root)
 
-    result = compile_memory.apply_compile_plan(
-        inputs, plan, action_key="4" * 64, trigger="manual",
-        coordinator=coordinator, completed_at="2026-07-14T12:00:00Z",
-    )
+    with pytest.raises(contradiction_pipeline.StaleLifecycleTarget):
+        compile_memory.apply_compile_plan(
+            inputs, plan, action_key="4" * 64, trigger="manual",
+            coordinator=coordinator, completed_at="2026-07-14T12:00:00Z",
+        )
 
     current = existing.read_bytes()
     assert (
-        result.operation_id.startswith("compile-quarantine:"),
         (root / "knowledge/notes/exact-byte-pattern.md").exists(),
-        len(list((root / "knowledge/inbox/claims").glob("*.md"))),
-    ) == (True, False, 1)
+        list((root / "knowledge/inbox/claims").glob("*.md")),
+    ) == (False, [])
     assert (
         replacement["fingerprint"].encode() in current,
         b'"lifecycle":"active"' in current,
@@ -1127,7 +1042,11 @@ def test_compile_same_id_replacement_after_assessment_quarantines_without_mutati
 
 
 def _about(record: dict[str, object], subject: str) -> dict[str, object]:
-    moved = {**record, "subject": subject}
+    return _rekeyed(record, subject=subject)
+
+
+def _rekeyed(record: dict[str, object], **fields: object) -> dict[str, object]:
+    moved = {**record, **fields}
     moved["fingerprint"] = sha256_bytes(
         canonical_json_bytes(
             {key: moved[key] for key in ("subject", "relation", "value", "qualifiers", "validity")}
@@ -2532,27 +2451,71 @@ def test_one_operation_that_cannot_be_reviewed_alone_is_refused(monkeypatch):
         compile_memory._CompileAttempt._critique_batches(attempt, None, ["a"])
 
 
-def test_a_quarantined_batch_is_named_apart_from_a_published_one(capsys):
+def test_a_published_batch_is_named_by_what_it_did(capsys):
     """Issue #26.2: `done` and `ok` read the same whether pages were published or not."""
     import compile_memory
 
-    quarantined = compile_memory.CompileApplyResult(
-        "t1", "compile-quarantine:abc", "committed", ("knowledge/inbox/claims/x.md",), 1, "now", "k"
-    )
     published = compile_memory.CompileApplyResult(
         "t2", "compile:def", "committed", ("knowledge/notes/a.md", "knowledge/notes/b.md"), 2, "now", "k"
     )
 
-    first = compile_memory._committed_outcome(quarantined)
-    second = compile_memory._committed_outcome(published)
+    outcome = compile_memory._committed_outcome(published)
 
-    out = capsys.readouterr().out
+    assert "batch published 2 page(s)" in capsys.readouterr().out
     assert (
-        "batch quarantined: 1 candidate(s) under knowledge/inbox/claims/" in out,
-        "batch published 2 page(s)" in out,
-    ) == (True, True)
+        compile_memory.compile_outcome([outcome]),
+        compile_memory.compile_outcome([]),
+        compile_memory._finished_outcome("error", [outcome]),
+    ) == ("published", "nothing", "failed")
+
+
+@pytest.mark.parametrize(
+    "label,kept",
+    [("compatible", "active"), ("refinement", "active"), ("contradiction", "quarantined")],
+)
+def test_the_model_may_settle_a_claim_but_never_supersede_one(vault, monkeypatch, label, kept):
+    """Two agreeing evaluations settle what the rules cannot; a contradiction still waits.
+
+    See docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md.
+    """
+    root, state_root = vault
+    daily = _daily(root)
+    import compile_memory
+    from contradiction_pipeline import Evaluation
+
+    held = _claim_record(
+        root, claim_id="held", value="blue",
+        text="The prior state is blue.", authority="ai-derived",
+    )
+    held = _rekeyed(held, relation="depends-on")
+    page = root / "knowledge/notes/existing.md"
+    page.write_bytes(_ledger_page("Existing", [held]))
+    new = _claim_record(
+        root, claim_id="new", value="green",
+        text="A durable exact-byte observation.", authority="ai-derived",
+    )
+    new = _rekeyed(new, relation="uses")
+
+    def evaluator(_new, _old, *, critique, prior_label=None):
+        return Evaluation(label, "high", True, "semantic")
+
+    monkeypatch.setattr(compile_memory, "_contradiction_evaluators", lambda: (evaluator, evaluator))
+    monkeypatch.setattr(compile_memory, "default_secondary_search", lambda *args: [])
+    from claims import ClaimIndex
+
+    ClaimIndex(state_root, vault=root).rebuild()
+    inputs = compile_memory.snapshot_compile_inputs([daily])
+
+    result = compile_memory.apply_compile_plan(
+        inputs,
+        {"schema_version": "compile-plan/v2", "operations": [_operation("create", "fresh", [new])]},
+        action_key="b2" * 32, trigger="manual",
+        coordinator=MarkdownCoordinator(root, state_root),
+        completed_at="2026-07-14T12:00:00Z",
+    )
+
     assert (
-        compile_memory.compile_outcome([first]),
-        compile_memory.compile_outcome([first, second]),
-        compile_memory._finished_outcome("error", [second]),
-    ) == ("quarantined", "partial", "failed")
+        result.state,
+        _ledger_lifecycles((root / "knowledge/notes/fresh.md").read_bytes()),
+        _ledger_lifecycles(page.read_bytes()),
+    ) == ("committed", {"new": kept}, {"held": "active"})

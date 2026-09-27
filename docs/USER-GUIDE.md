@@ -972,15 +972,14 @@ window. A source remains flat if its compile receipt, terminal operations, queue
 preflight, exact evidence, or pins do not validate. Published BagIt bags are immutable
 and uncompressed; logical evidence resolves from the flat file first and then a
 verified bag. There is no gzip archive tier. Claims with invalid evidence, evaluator
-disagreement, unsupported semantics, or low confidence enter
-`knowledge/inbox/claims/` quarantine. A batch that quarantines publishes the
-candidate only, no page: the compile prints `batch quarantined`, records
-`last_compile_outcome: quarantined` (or `partial` when other batches published),
-and the daily stays pending, so the next run retries it. The batch is atomic:
-an independent decision in the same daily is not published on its own. There is
-no accept command for a candidate; review it, then publish the decision as a
-page through the transaction API, or edit the daily and recompile it with
-`compile_memory.py --file`. The candidate and the audit trail are kept. The frozen benchmark reports false
+disagreement, unsupported semantics, or low confidence are kept on their page with
+`lifecycle: quarantined`, which retrieval and contradiction checks ignore. The page
+and the rest of its batch publish, the daily compiles, and the compile prints how many
+doubtful claims it kept; nothing waits for a person. Two agreeing, high-confidence model
+evaluations may settle a claim the rules cannot as compatible or a refinement, never as
+a supersession. Two claims lifted from the same quoted line are the same fact. The compile
+writes no file under `knowledge/inbox/claims/`; the standalone contradiction check still
+can. See `docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md`. The frozen benchmark reports false
 supersession and provenance metrics; automatic semantic supersession and eager
 backfill remain disabled.
 

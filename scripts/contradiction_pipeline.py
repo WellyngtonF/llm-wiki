@@ -1090,9 +1090,11 @@ class ContradictionPipeline:
         self,
         assessments: Sequence[ClaimAssessment],
         pending: Mapping[str, bytes] | None = None,
+        *,
+        candidates: bool = True,
     ) -> tuple[list[MarkdownChange], dict[str, object], tuple[str, ...]]:
         changes, preconditions, created, _present = self.plan_candidate_changes(
-            assessments, pending
+            assessments, pending, candidates=candidates
         )
         return changes, preconditions, created
 
@@ -1100,6 +1102,8 @@ class ContradictionPipeline:
         self,
         assessments: Sequence[ClaimAssessment],
         pending: Mapping[str, bytes] | None = None,
+        *,
+        candidates: bool = True,
     ) -> tuple[list[MarkdownChange], dict[str, object], tuple[str, ...], tuple[str, ...]]:
         """Changes, preconditions, candidates to create, and candidates already on disk.
 
@@ -1109,6 +1113,8 @@ class ContradictionPipeline:
         `pending` holds after-images the caller's transaction already writes; a
         lifecycle target there is superseded in that image, not in the disk bytes
         (docs/research/2026-09-26-a-page-can-supersede-its-own-claim.md).
+        Without `candidates` a quarantined claim writes no review file: the compile
+        keeps it on its page instead (docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md).
         """
         if self.vault is None:
             raise ValueError("mutation planning requires a vault")
@@ -1118,7 +1124,7 @@ class ContradictionPipeline:
         mutations = set()
         for assessment in sorted(assessments, key=_assessment_order):
             mutations.update(assessment.lifecycle_mutations)
-            if assessment.recommendation != "quarantine":
+            if not candidates or assessment.recommendation != "quarantine":
                 continue
             path, content, record = self._candidate_file(assessment.claim)
             if _candidate_present(self.vault / path, record):

@@ -24,9 +24,10 @@ One-sentence summary: Session memory captures what Claude Code and the human lea
 - Daily archive keeps a 90-day hot set, moves eligible sources into immutable
   uncompressed BagIt bags, and never archives source failures, uncompiled content,
   decision evidence, or manual pins.
-- Atomic claim candidates that fail literal evidence or semantic agreement enter
-  quarantine. The contradiction benchmark gates semantic supersession; there is no
-  eager backfill or automatic semantic lifecycle mutation.
+- Atomic claim candidates that fail literal evidence or semantic agreement are kept on
+  their page as `quarantined`, without holding the batch or the day back. Agreeing model
+  evaluations may settle a claim as compatible or a refinement; there is no eager
+  backfill or automatic semantic supersession.
 - Markdown, Git, and append-only project journals are authoritative. Evidence Graph,
   FTS, vectors, tiers, contextual artifacts, telemetry, and model caches are derived.
 - Derived artifacts consumed together belong to one validated immutable generation.

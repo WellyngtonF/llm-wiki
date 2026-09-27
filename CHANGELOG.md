@@ -120,6 +120,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   of a claim it already holds from that line. All 18 conflicts in the owner's quarantine
   were such paraphrases. See
   `docs/research/2026-09-27-a-paraphrase-is-not-a-contradiction.md`.
+- **A doubtful claim does not wait for a person.** A claim the policy could not settle
+  sent its whole batch to `knowledge/inbox/claims/` and held the day back until someone
+  reviewed it; 170 candidates had piled up with no real contradiction among them. The
+  claim is now kept on its page as `quarantined`, out of retrieval, and the page, the
+  batch and the day publish. Two agreeing high-confidence model evaluations may settle a
+  claim as compatible or a refinement, never as a supersession. See
+  `docs/research/2026-09-27-a-doubtful-claim-does-not-wait-for-a-person.md`.
 
 ### Changed
 
