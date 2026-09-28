@@ -114,6 +114,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   sixteen minutes died on one long holder. A model call is now refused only when
   this thread holds the gate, and publication waits up to 120 s within the compile's
   deadline. See `docs/research/2026-09-27-a-busy-gate-does-not-fail-the-compile.md`.
+- **A failed nightly is not rerun by every session.** Only a success recorded the
+  nightly's date, so after a failed pass every session start ran the whole nightly
+  again once its 30-minute claim lapsed: four passes in one evening, and another at
+  each login, slowing startup and shutdown. A pass that ran and failed for the due
+  evening now counts as tried; the next scheduled evening retries it. See
+  `docs/research/2026-09-28-a-failed-nightly-is-not-rerun-by-every-session.md`.
 - **A paraphrase is not a contradiction.** Two claims lifted from the same quoted line
   about the same subject are the same fact, whatever their wording: they no longer
   supersede one another or go to quarantine, and a page does not gain a reworded copy

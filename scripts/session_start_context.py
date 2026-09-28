@@ -118,7 +118,9 @@ def _claim_nightly_catchup(today: str | None = None, now: str | None = None) -> 
 
     `today` is the due evening. A pass records its own date, which for a catch-up
     run the next morning is after the evening it stood in for, so any date from
-    the due one on counts as done.
+    the due one on counts as done. A pass that ran and failed counts too: the next
+    scheduled evening retries it, not every session that opens. See
+    `docs/research/2026-09-28-a-failed-nightly-is-not-rerun-by-every-session.md`.
     """
     today = _due_day_iso(today)
     claimed_at = _parse_iso_safe(now) or datetime.now(timezone.utc)
@@ -127,6 +129,8 @@ def _claim_nightly_catchup(today: str | None = None, now: str | None = None) -> 
     def _mutate(state: dict) -> None:
         nonlocal claimed
         if str(state.get("last_nightly_date", ""))[:10] >= today:
+            return
+        if str(_state_map(state, "last_nightly_failure").get("date", ""))[:10] >= today:
             return
         if _claim_is_live(_state_map(state, "nightly_catchup_claim"), today, claimed_at):
             return
