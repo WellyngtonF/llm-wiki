@@ -154,6 +154,7 @@ def _report(result: dict[str, object]) -> str:
         f"drained {drained} checkpoint(s); "
         f"{len(backlog['remaining'])} project(s) still queued; "
         f"{len(backlog['failed'])} project(s) failed; "
+        f"discarded {len(backlog.get('discarded', {}))} queue(s) no registered repository owns; "
         f"removed {temporaries['removed']} orphaned temporary file(s), "
         f"{temporaries['bytes']} byte(s)"
     )

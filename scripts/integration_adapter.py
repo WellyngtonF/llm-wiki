@@ -38,7 +38,7 @@ from project_journal import (
 )
 from secret_redact import redact_secrets
 from session_start_project_state import working_repository
-from work_state import Placement, placement_of, work_state_store
+from work_state import Placement, Unregistered, placement_of, work_state_store
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 DELEGATE_TIMEOUT_SECONDS = 10
@@ -1901,14 +1901,25 @@ def drain_pending_backlog(budget_seconds: float = BACKLOG_DRAIN_SECONDS) -> dict
     deadline = time.monotonic() + budget_seconds
     drained: dict[str, object] = {}
     failed: dict[str, str] = {}
+    discarded: dict[str, int] = {}
     for slug in _pending_backlog_slugs():
-        drained[slug] = _drain_one_backlog(slug, deadline, failed)
+        drained[slug] = _drain_one_backlog(slug, deadline, failed, discarded)
         if time.monotonic() >= deadline:
             break
-    return {"drained": drained, "failed": failed, "remaining": _pending_backlog_slugs()}
+    return {
+        "drained": drained,
+        "failed": failed,
+        "discarded": discarded,
+        "remaining": _pending_backlog_slugs(),
+    }
 
 
-def _drain_one_backlog(slug: str, deadline: float, failed: dict[str, str]) -> int:
+def _drain_one_backlog(
+    slug: str,
+    deadline: float,
+    failed: dict[str, str],
+    discarded: dict[str, int] | None = None,
+) -> int:
     """One project's backlog, isolated: its failure is not the pass's failure.
 
     Measured 2026-08-30: a single unrecoverable reservation in one project raised
@@ -1924,9 +1935,48 @@ def _drain_one_backlog(slug: str, deadline: float, failed: dict[str, str]) -> in
             state_lock_seconds=BACKLOG_STATE_LOCK_SECONDS,
             deadline=deadline,
         )
+    except Unregistered as error:
+        dropped = _discard_unregistered_queue(slug)
+        if dropped and discarded is not None:
+            discarded[slug] = dropped
+        elif not dropped:
+            failed[slug] = _bounded_checkpoint_error(error)
     except Exception as error:  # noqa: BLE001
         failed[slug] = _bounded_checkpoint_error(error)
     return before - _pending_backlog_depth(slug)
+
+
+# How long a queue must have been quiet before `Unregistered` is believed. A
+# registered repository whose entry is briefly unusable also answers
+# `Unregistered`; a queue with no event for this long is not waiting on one.
+UNREGISTERED_QUEUE_GRACE = timedelta(days=3)
+
+
+def _discard_unregistered_queue(slug: str) -> int:
+    """Drop a quiet queue no registered repository will ever take (ADR 0002).
+
+    Queues enqueued before projects were registered were refused by every drain
+    and kept until they expired. Age is measured against the newest pending
+    event, as expiry is. The drain reports the discard; it is the rule working,
+    not a lost capture. See
+    `docs/research/2026-09-28-a-queue-with-no-project-is-discarded.md`.
+    """
+    discarded: list[int] = []
+
+    def discard(state: dict[str, Any]) -> None:
+        pending = state.get("project_checkpoint_pending")
+        queue = _pending_queue(state, slug)
+        if not queue:
+            return
+        newest = _newest_pending_instant(pending)
+        latest = _newest_pending_instant({slug: queue})
+        if newest is None or latest is None or newest - latest < UNREGISTERED_QUEUE_GRACE:
+            return
+        discarded.append(len(pending.pop(slug)))
+        state.get(INFLIGHT_STATE_KEY, {}).pop(slug, None)
+
+    update_state(discard, lock_timeout=BACKLOG_STATE_LOCK_SECONDS)
+    return discarded[0] if discarded else 0
 
 
 def _observe_project_checkpoint(

@@ -126,6 +126,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   left to drain, and the queue only grew. A window already past its debounce now
   drains as one batch of up to 100 events, carrying everything it merged before.
   See `docs/research/2026-09-28-a-backlog-drains-in-full-batches.md`.
+- **A queue with no project is discarded.** Checkpoint queues enqueued before
+  projects were registered were refused as `Unregistered` by every nightly drain
+  and kept for 30 days. The unattended drain now discards such a queue once it has
+  been quiet for 3 days, and the reclaim summary counts the discards. See
+  `docs/research/2026-09-28-a-queue-with-no-project-is-discarded.md`.
 - **A paraphrase is not a contradiction.** Two claims lifted from the same quoted line
   about the same subject are the same fact, whatever their wording: they no longer
   supersede one another or go to quarantine, and a page does not gain a reworded copy
