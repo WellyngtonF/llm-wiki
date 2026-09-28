@@ -120,6 +120,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   each login, slowing startup and shutdown. A pass that ran and failed for the due
   evening now counts as tried; the next scheduled evening retries it. See
   `docs/research/2026-09-28-a-failed-nightly-is-not-rerun-by-every-session.md`.
+- **A backlog drains in full batches.** A checkpoint batch ended at every file
+  change, about five events, and each drain cycle rewrites `run/state.json` four
+  times. One long Codex session queued 5 964 events; at 15 MB the hooks had no time
+  left to drain, and the queue only grew. A window already past its debounce now
+  drains as one batch of up to 100 events, carrying everything it merged before.
+  See `docs/research/2026-09-28-a-backlog-drains-in-full-batches.md`.
 - **A paraphrase is not a contradiction.** Two claims lifted from the same quoted line
   about the same subject are the same fact, whatever their wording: they no longer
   supersede one another or go to quarantine, and a page does not gain a reworded copy

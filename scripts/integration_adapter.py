@@ -1711,11 +1711,32 @@ def _checkpoint_plan(
     replayed = _inflight_plan(items, reducer_states, inflight)
     if replayed is not None:
         return replayed
+    if len(items) >= MAX_PENDING_CHECKPOINT_ITEMS:
+        return _backlog_plan(items, reducer_states)
     reducers, decisions, index, decision = _observe_until_checkpoint(items, reducer_states)
     index, decision, waiting = _resolve_debounce(items, reducers, index, decision)
     if waiting:
         return None
     return _batch_plan(items, reducer_states, reducers, decisions, index, decision)
+
+
+def _backlog_plan(
+    items: list[dict[str, object]],
+    reducer_states: dict[str, object],
+):
+    """A backlog drains in the largest batch one checkpoint may carry.
+
+    Each cycle rewrites `run/state.json` four times, and a batch that ends at every
+    file change carries about five events. Measured on this vault 2026-09-28: 5 964
+    queued events, 1.8 s per rewrite at 15 MB, and hooks with no time left to drain.
+    A queue this long is already past its debounce, so the batch is the same one
+    `_batch_plan` flushes when a checkpoint would overflow. See
+    `docs/research/2026-09-28-a-backlog-drains-in-full-batches.md`.
+    """
+    selected = list(items[: _bounded_pending_batch_count(items)])
+    reducers, decisions = _observe_all(selected, reducer_states)
+    selected_time = datetime.fromisoformat(str(selected[-1]["occurred_at"]))
+    return selected, reducers, decisions, CheckpointDecision("batch_flush", checkpoint_at=selected_time)
 
 
 def _inflight_plan(
