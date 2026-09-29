@@ -84,6 +84,11 @@ required-version = "==0.12.3"
 testpaths = ["tests"]
 # `conftest.py` injects scripts/ into sys.path; no package install needed.
 pythonpath = ["scripts"]
+# Keep a test's temporary tree only when it failed. A passed test's tree is deleted,
+# and `tests/deletable_trees.py` gives back the ACLs that would stop that: Windows
+# walks every file in %TEMP% at logon. See
+# `docs/research/2026-09-29-a-test-tree-can-always-be-deleted.md`.
+tmp_path_retention_policy = "failed"
 
 [tool.pyright]
 # Declared so Pyright never searches ancestor directories for its settings.

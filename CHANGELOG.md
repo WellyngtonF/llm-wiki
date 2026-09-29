@@ -131,6 +131,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   and kept for 30 days. The unattended drain now discards such a queue once it has
   been quiet for 3 days, and the reclaim summary counts the discards. See
   `docs/research/2026-09-28-a-queue-with-no-project-is-discarded.md`.
+- **A test tree can always be deleted.** Archives and caches narrow their Windows
+  ACLs on purpose, and pytest cannot delete what an ACL protects, so each full run
+  left about 64 000 files in `%TEMP%\pytest-of-<user>` as `garbage-*` trees. Windows
+  walks every file in `%TEMP%` at logon; on the owner's machine logon went from 20 s
+  to 17 minutes. The suite now resets those ACLs at session end and keeps only failed
+  tests' trees. See `docs/research/2026-09-29-a-test-tree-can-always-be-deleted.md`.
 - **A paraphrase is not a contradiction.** Two claims lifted from the same quoted line
   about the same subject are the same fact, whatever their wording: they no longer
   supersede one another or go to quarantine, and a page does not gain a reworded copy

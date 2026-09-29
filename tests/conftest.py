@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.deletable_trees import release_test_tree
+
 pytest_plugins = ("tests.code_kernel_helpers",)
 collect_ignore_glob = ["fixtures/code_kernel/python/tests/test_service.py"]
 
@@ -100,7 +102,24 @@ def _isolate_test_state_root():
         state_file.write_text(json.dumps({"last_nightly_date": today}) + "\n", encoding="utf-8")
     yield
     if _EARLY_STATE_ROOT is not None:
+        release_test_tree(_EARLY_STATE_ROOT)
         shutil.rmtree(_EARLY_STATE_ROOT, ignore_errors=True)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session):
+    """Give back the ACLs tests narrowed before pytest deletes its temporary trees.
+
+    pytest removes the trees of passed tests, and old sessions' trees at exit, but it
+    cannot remove what an owner-read-only ACL protects. Without this every such tree
+    stayed as a `garbage-*` directory in %TEMP%, which Windows walks at every logon.
+    See `docs/research/2026-09-29-a-test-tree-can-always-be-deleted.md`.
+    """
+    factory = getattr(session.config, "_tmp_path_factory", None)
+    if factory is None or getattr(factory, "_basetemp", None) is None:
+        return
+    basetemp = factory.getbasetemp()
+    release_test_tree(basetemp if session.config.option.basetemp else basetemp.parent)
 
 
 # This checkout *is* the owner's vault since the two directories were merged on
