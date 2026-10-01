@@ -44,6 +44,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   ├── retrieval_telemetry.py       private bounded retrieval event cache
 │   ├── reflection.py                v4.0: A-MEM page consolidation
 │   ├── mcp_server.py                v4.0: MCP server (13 task-shaped tools, stdio)
+│   ├── mcp_stdio.py                 stdio transport on private fds; the loop starts no thread
 │   ├── integration_adapter.py       v4.x: thin native lifecycle adapter
 │   ├── event_envelope.py            v4.x: shared lifecycle event contract
 │   ├── mcp_contract.py              v4.x: uniform MCP response envelope/resources

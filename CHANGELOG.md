@@ -79,6 +79,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The MCP server always answers on Windows.** A call could hang forever, past its
+  own 10 s deadline: a scipy DLL load held the loader lock while its runtime waited on
+  fd 0, behind the stdin read pending on the client's named pipe, and the event loop
+  waited in `Thread.start()` for that lock. The client's pipes now live on private
+  descriptors while fds 0 and 1 name the null device, and the reader, the writer and
+  the call workers are started once, before serving, so the event loop starts no
+  thread. See
+  `docs/research/2026-10-01-the-mcp-pipes-leave-the-standard-descriptors.md`.
 - **A page can supersede its own claim.** When a compile updated a note and a new
   claim on it contradicted an older claim on the same note, the supersession was
   refused as an overlap, the whole batch failed, and every retry failed the same

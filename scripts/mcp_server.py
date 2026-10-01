@@ -42,6 +42,7 @@ import hashlib
 import inspect
 import itertools
 import os
+import queue
 import re
 import sys
 import threading
@@ -88,6 +89,9 @@ MCP_WORKER_SLOTS = 4
 _MCP_WORKERS: set[concurrent.futures.Future] = set()
 _MCP_WORKERS_LOCK = threading.Lock()
 _MCP_WORKER_IDS = itertools.count(1)
+_MCP_WORKER_QUEUE: queue.SimpleQueue = queue.SimpleQueue()
+_MCP_WORKER_POOL: list[threading.Thread] = []
+_MCP_WORKER_POOL_LOCK = threading.Lock()
 _OPERATION_DEADLINE: ContextVar[float | None] = ContextVar(
     "mcp_operation_deadline", default=None
 )
@@ -111,7 +115,6 @@ CallToolResult = None
 TextContent = None
 try:
     from mcp.server import Server
-    from mcp.server.stdio import stdio_server
     from mcp.types import TextContent, Tool
     MCP_AVAILABLE = True
     MCP_STRUCTURED_OUTPUT_AVAILABLE = "outputSchema" in getattr(Tool, "model_fields", {})
@@ -270,18 +273,38 @@ def _run_submitted(submitted, context, function, args) -> None:
         submitted.set_result(result)
 
 
+def _serve_mcp_worker() -> None:
+    while True:
+        _run_submitted(*_MCP_WORKER_QUEUE.get())
+
+
+def start_mcp_worker_pool() -> None:
+    """Start every worker a bounded call can use, once, before the server serves.
+
+    The event loop must never start a thread: on Windows `Thread.start()` waits
+    for the loader lock, and a DLL load that never finishes held it forever on
+    2026-09-30, so the call's deadline could not even answer. A reservation in
+    `_MCP_WORKERS` stays the slot; a queued job waits only for the moment its
+    previous holder takes to return to the queue. See `mcp_stdio`.
+    """
+    with _MCP_WORKER_POOL_LOCK:
+        while len(_MCP_WORKER_POOL) < MCP_WORKER_SLOTS:
+            thread = threading.Thread(
+                target=_serve_mcp_worker,
+                name=f"llm-wiki-mcp-{next(_MCP_WORKER_IDS)}",
+                daemon=True,
+            )
+            thread.start()
+            _MCP_WORKER_POOL.append(thread)
+
+
 def _start_worker_thread(submitted, context, function, args) -> None:
-    thread = threading.Thread(
-        target=_run_submitted,
-        args=(submitted, context, function, args),
-        name=f"llm-wiki-mcp-{next(_MCP_WORKER_IDS)}",
-        daemon=True,
-    )
     try:
-        thread.start()
+        start_mcp_worker_pool()
     except BaseException:
         submitted.cancel()
         raise
+    _MCP_WORKER_QUEUE.put((submitted, context, function, args))
 
 
 # ``code_graph``'s live extraction takes no deadline and cannot be interrupted
@@ -6276,6 +6299,12 @@ def build_server():
     return server
 
 
+def _stdio_transport():
+    from mcp_stdio import isolated_stdio_server
+
+    return isolated_stdio_server()
+
+
 def run_server() -> int:
     """Start the MCP server (stdio transport). Returns exit code."""
     if not MCP_AVAILABLE:
@@ -6286,10 +6315,11 @@ def run_server() -> int:
         return 1
 
     server = build_server()
-    _start_encoder_warmup()
 
     async def main():
-        async with stdio_server() as (read_stream, write_stream):
+        async with _stdio_transport() as (read_stream, write_stream):
+            start_mcp_worker_pool()
+            _start_encoder_warmup()
             await server.run(read_stream, write_stream, server.create_initialization_options())
 
     exit_code = 0

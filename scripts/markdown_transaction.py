@@ -4509,6 +4509,7 @@ def _run_acl_command(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         command,
         check=False,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         timeout=5,
     )

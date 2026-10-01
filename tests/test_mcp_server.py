@@ -2106,6 +2106,7 @@ class TestHandleToolCall:
         workers = set()
         monkeypatch.setattr(mcp_server, "_MCP_WORKERS", workers)
         monkeypatch.setattr(mcp_server, "_MCP_WORKERS_LOCK", threading.Lock())
+        monkeypatch.setattr(mcp_server, "_MCP_WORKER_POOL", [])
         monkeypatch.setattr(mcp_server.threading, "Thread", BrokenThread)
 
         for _ in range(mcp_server.MCP_WORKER_SLOTS + 1):
@@ -4881,7 +4882,7 @@ def test_run_server_closes_navigation_manager_in_finally(
 
     monkeypatch.setattr(mcp_server, "MCP_AVAILABLE", True)
     monkeypatch.setattr(mcp_server, "Server", FakeServer)
-    monkeypatch.setattr(mcp_server, "stdio_server", Stdio)
+    monkeypatch.setattr(mcp_server, "_stdio_transport", Stdio)
     monkeypatch.setattr(mcp_server, "_build_tool_definitions", lambda: [])
     monkeypatch.setattr(mcp_server, "_register_resources", lambda *_args: False)
     monkeypatch.setattr(mcp_server, "_register_tools", lambda *_args: None)
