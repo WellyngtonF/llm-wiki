@@ -2874,12 +2874,19 @@ def _require_evidence_shape(evidence: object) -> None:
 def _bound_part(
     sources: list[DailySnapshot], timestamp: str, quote_bytes: bytes
 ) -> tuple[DailySnapshot, bytes, int]:
-    """The one part whose entry declares this timestamp and holds this quote."""
+    """The one part whose entry declares this timestamp and holds this quote.
+
+    A part whose only entry of that second lacks the quote is not a candidate:
+    a breadcrumb and the entry after it often share a second, and a cut between
+    them used to bind both parts and refuse the whole plan.
+    """
     bound = []
     for source in sources:
         try:
             block, marker_at = _evidence_block(source, timestamp, quote_bytes)
         except ValueError:
+            continue
+        if quote_bytes and quote_bytes not in block:
             continue
         bound.append((source, block, marker_at))
     if len(bound) != 1:

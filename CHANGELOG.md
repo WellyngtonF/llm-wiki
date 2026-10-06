@@ -79,6 +79,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A citation binds when a cut separates two entries of one second.** A breadcrumb
+  and the entry after it often share a timestamp. When a long day was cut between
+  them, the breadcrumb's part was taken without its quote being looked for, the
+  binding counted two parts, and the whole plan was refused. A part now binds only
+  when its entry holds the quote.
 - **A growing vault no longer fills the compile window.** Every prompt described
   every live note in about 300 tokens, so 171 notes filled a 64,000-token window
   and every compile was refused. Every live note is still listed, but by its slug

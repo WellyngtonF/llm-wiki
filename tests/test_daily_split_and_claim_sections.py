@@ -97,6 +97,35 @@ def test_source_selector_binds_original_words_and_actual_timestamp(tmp_path, mon
     assert "block:14:08:27" in compiler._evidence_binding(evidence, inputs)["reference"]
 
 
+def test_a_quote_binds_to_the_one_part_that_holds_it_when_two_parts_share_its_time(tmp_path, monkeypatch):
+    """A breadcrumb and the next entry declared one second; a cut put them in two parts.
+
+    The breadcrumb's part declared the time once, so it was taken without its
+    quote being looked for, and the binding counted two parts (2026-10-06).
+    """
+    import compile_memory as compiler
+
+    monkeypatch.setattr(compiler, "ROOT", tmp_path)
+    breadcrumb = (b"<!-- llm-wiki-operation:" + b"a" * 64 + b" -->\n\n"
+                  b"- `[18:09:51] prompt | a7351339 | -` Prepare a test flow for this PR.\n\n")
+    entry = (b"## [18:09:51] pre-compact | a7351339\n"
+             b"- The nightly trigger fetches the latest conciliation file.\n")
+    path = "knowledge/daily/2026-10-02.md"
+    parts = tuple(
+        compiler.DailySnapshot(path, piece, sha256_bytes(piece), part_index=index, part_count=2,
+                               byte_start=start, byte_end=start + len(piece))
+        for index, (start, piece) in enumerate(((0, breadcrumb), (len(breadcrumb), entry)))
+    )
+    inputs = compiler.CompileInputs(parts, (), ())
+    evidence = {"daily_date": "2026-10-02", "timestamp": "18:09:51", "claim": "Stated.",
+                "quoted_text": "- The nightly trigger fetches the latest conciliation file."}
+
+    binding = compiler._evidence_binding(evidence, inputs)
+
+    assert "block:18:09:51" in binding["reference"]
+    assert binding["source_digest"] == parts[1].sha256
+
+
 def test_unknown_selector_is_not_silently_dropped():
     import compile_memory as compiler
 
