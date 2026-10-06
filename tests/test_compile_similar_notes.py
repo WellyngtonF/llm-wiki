@@ -284,6 +284,34 @@ def test_similar_notes_are_capped_and_ranked_by_likeness(
     assert ALPHA_BODY not in draft
 
 
+def _catalog(prompt: str) -> dict[str, dict[str, object]]:
+    block = prompt.split("EXISTING NOTES", 1)[1].split("\n\n", 1)[0]
+    entries = [json.loads(line) for line in block.splitlines() if line.startswith("{")]
+    return {str(entry["slug"]): entry for entry in entries}
+
+
+def test_past_the_limit_the_catalog_describes_only_the_related_notes(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0006: every live note is listed; only the related one is described."""
+    import compile_memory
+
+    _search_over(vault, monkeypatch, tmp_path, vector_state="complete")
+    monkeypatch.setattr(compile_memory, "CATALOG_DESCRIBED_MAX", 1)
+    model = _model(monkeypatch, _operation("backend-renewal", "Backend renewal", "Renew before expiry."))
+
+    assert _compile() == 0
+
+    [draft] = model.draft_prompts
+    [critique] = model.critique_prompts
+    for prompt in (draft, critique):
+        catalog = _catalog(prompt)
+        assert sorted(catalog) == ["alpha-release-owner", "backend-lease"]
+        assert catalog["backend-lease"]["title"] == "Backend lease"
+        assert catalog["backend-lease"]["summary"] == "How the lease is held."
+        assert catalog["alpha-release-owner"] == {"slug": "alpha-release-owner"}
+
+
 @pytest.mark.parametrize(
     ("named", "written"),
     [("backend-lease", True), ("no-such-note", False), ("old-queue-drain", False)],

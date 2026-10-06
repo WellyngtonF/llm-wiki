@@ -542,7 +542,8 @@ or nonzero active state remains fail-closed.
 ### CODE zone (tracked in git)
 - `scripts/` — Python pipeline and host helpers. Central hub:
   `memory_state.py` (path/lock/state), `compile_memory.py` (LLM compile +
-  VERIFY-BEFORE-WRITE), `flush_memory.py` (3-tier classification),
+  VERIFY-BEFORE-WRITE; its prompt lists every live note by slug and describes
+  only the notes related to the batch, ADR 0006), `flush_memory.py` (3-tier classification),
   `maybe_compile.py` (PID-locked spawn), `search_memory.py` (entry point; fusion lives in `retrieval.py`),
   `llm_client.py` (5 backends + fake), `integration_adapter.py` (thin host
   lifecycle boundary), `mcp_server.py` (13 task-shaped tools), and `doctor.py`.

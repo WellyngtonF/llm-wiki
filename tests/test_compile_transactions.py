@@ -2423,7 +2423,7 @@ def test_critique_batches_split_until_each_one_fits(monkeypatch):
     import compile_memory
 
     monkeypatch.setattr(
-        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None: "x" * len(batch)
+        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None, **_: "x" * len(batch)
     )
     attempt = compile_memory._CompileAttempt.__new__(compile_memory._CompileAttempt)
     attempt.inputs = compile_memory.CompileInputs((), (), ())
@@ -2441,7 +2441,7 @@ def test_one_operation_that_cannot_be_reviewed_alone_is_refused(monkeypatch):
     import compile_memory
 
     monkeypatch.setattr(
-        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None: "x" * len(batch)
+        compile_memory, "_critique_prompt", lambda inputs, batch, similar_count=None, **_: "x" * len(batch)
     )
     attempt = compile_memory._CompileAttempt.__new__(compile_memory._CompileAttempt)
     attempt.inputs = compile_memory.CompileInputs((), (), ())

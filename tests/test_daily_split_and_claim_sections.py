@@ -48,7 +48,9 @@ def test_draft_knows_existing_targets_even_when_optional_context_is_omitted():
 
     target = compiler.TargetSnapshot("knowledge/notes/existing-rule.md", b"old rule", sha256_bytes(b"old rule"))
     inputs = compiler.CompileInputs((), (), (target,))
-    prompt = compiler._draft_prompt(inputs)
+    assert '{"slug":"existing-rule"}' in compiler._draft_prompt(inputs)
+    described = compiler.CompileInputs((), (), (target,), described=(target.logical_path,))
+    prompt = compiler._draft_prompt(described)
     assert '{"slug":"existing-rule","title":"existing-rule"}' in prompt
     assert "Never create a slug for a topic a catalog entry already covers" in prompt
 

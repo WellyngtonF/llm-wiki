@@ -6,6 +6,8 @@ blind: it could not tell that a topic already had a note. Both the writer and
 the reviewer now read one line per live note — slug, title, one-sentence
 summary, type, project and tags — counted in the compile budget, so a covered
 topic is updated under its existing slug instead of re-created under a new one.
+ADR 0006: past `CATALOG_DESCRIBED_MAX` live notes, only the notes related to the
+batch keep those fields, and every other note is listed by its slug alone.
 """
 from __future__ import annotations
 
@@ -135,7 +137,9 @@ class FakeModel:
 
         if prompt.startswith(compile_memory.CRITIQUE_PROGRAM):
             self.critique_prompts.append(prompt)
-            covered = {entry["title"]: slug for slug, entry in _catalog(prompt).items()}
+            covered = {
+                entry["title"]: slug for slug, entry in _catalog(prompt).items() if "title" in entry
+            }
             operations = json.loads(prompt.split("\nOPERATIONS\n", 1)[1].split("\n", 1)[0])
             reviews = [
                 {"slug": item["slug"], "verdict": "drop", "reason": f"covered by {covered[item['title']]}"}
@@ -264,6 +268,54 @@ def test_a_long_summary_is_capped_in_the_catalog(
     summary = str(_catalog(draft)["queue-lease"]["summary"])
     assert summary.startswith("The queue keeps one lease per checkout and renews it")
     assert len(summary) <= compile_memory.CATALOG_SUMMARY_CHARS
+
+
+def test_without_vectors_a_vault_past_the_limit_is_listed_by_slug_alone(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import compile_memory
+
+    monkeypatch.setattr(compile_memory, "CATALOG_DESCRIBED_MAX", 1)
+    model = _model(monkeypatch, _operation("backend-renewal", "Backend renewal", "Renew before expiry."))
+
+    assert _compile() == 0
+
+    [draft] = model.draft_prompts
+    [critique] = model.critique_prompts
+    for prompt in (draft, critique):
+        assert _catalog(prompt) == {slug: {"slug": slug} for slug in EXPECTED_CATALOG}
+    assert (vault / "knowledge" / "notes" / "backend-renewal.md").exists()
+
+
+def test_a_catalog_too_long_to_describe_still_lists_every_note_and_compiles(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0006: 122 described lines cannot fit this window; 122 slugs can."""
+    import compile_memory
+
+    for index in range(120):
+        _note_file(
+            vault / "knowledge" / "notes" / f"backend-topic-{index:03d}.md",
+            "type: concept\nproject: product-a\ntags: [backend]\n",
+            f"Backend topic {index}",
+            f"Backend topic {index} settles one durable rule about the queue and its lease renewal.",
+        )
+    window = 20_000
+    monkeypatch.setenv(WINDOW_ENV, str(window))
+    model = _model(monkeypatch, _operation("backend-renewal", "Backend renewal", "Renew before expiry."))
+
+    assert _compile() == 0
+
+    [draft] = model.draft_prompts
+    catalog = _catalog(draft)
+    assert len(catalog) == 122
+    assert all(entry == {"slug": slug} for slug, entry in catalog.items())
+    targets = compile_memory.snapshot_compile_inputs(()).targets
+    described = compile_memory._catalog_lines(
+        targets, frozenset(target.logical_path for target in targets)
+    )
+    assert len("\n".join(described).encode("utf-8")) > window
+    assert (vault / "knowledge" / "notes" / "backend-renewal.md").exists()
 
 
 def test_a_catalog_the_window_cannot_hold_refuses_the_compile_and_names_the_setting(

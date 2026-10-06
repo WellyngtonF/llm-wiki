@@ -79,6 +79,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A growing vault no longer fills the compile window.** Every prompt described
+  every live note in about 300 tokens, so 171 notes filled a 64,000-token window
+  and every compile was refused. Every live note is still listed, but by its slug
+  alone; title, summary, type, project and tags are given only for the notes the
+  search ranks related to the batch, at most 40, while they fit. A vault of 40
+  notes or fewer is described whole, as before (ADR 0006).
 - **The MCP server always answers on Windows.** A call could hang forever, past its
   own 10 s deadline: a scipy DLL load held the loader lock while its runtime waited on
   fd 0, behind the stdin read pending on the client's named pipe, and the event loop
