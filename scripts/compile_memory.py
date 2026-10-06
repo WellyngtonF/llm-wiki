@@ -710,6 +710,22 @@ def plan_compile_batches(
     deferred = _oversized_pieces(fitted, budget, _batch_measure(fitted, model, token_adapters))
     inputs = _without_pieces(fitted, {item.daily.part_key for item in deferred})
     measure = _batch_measure(inputs, model, token_adapters)
+    batches = tuple(
+        _packed_batch(inputs, paths, budget, model, token_adapters, measure)
+        for paths in _group_dailies(inputs, budget, measure)
+    )
+    return CompilePacking(batches, deferred)
+
+
+def _packed_batch(
+    inputs: CompileInputs,
+    paths: set[str],
+    budget: ContextBudget,
+    model: str | None,
+    token_adapters: Mapping[str, TokenCounter] | None,
+    measure: Callable[..., int],
+) -> CompileBatch:
+    """These pieces, with the notes and pages that fit beside them."""
     # A note reaches the prompt only as a similar note; the rest of the vault is
     # the catalog. Filling the room with notes in path order told the model
     # nothing about the ones it was about to repeat.
@@ -719,36 +735,29 @@ def plan_compile_batches(
     optional_sources = tuple(
         item for item in inputs.sources if item.logical_path not in excluded
     )
-    batches = []
-    for paths in _group_dailies(inputs, budget, measure):
-        related = _related_note_paths(inputs, paths)
-        similar = _fitting_similar_notes(
-            paths, related[:SIMILAR_NOTES_MAX], budget, measure
-        )
-        described = _fitting_described_notes(
+    related = _related_note_paths(inputs, paths)
+    similar = _fitting_similar_notes(paths, related[:SIMILAR_NOTES_MAX], budget, measure)
+    described = _fitting_described_notes(
+        paths,
+        _described_candidates(inputs, related),
+        budget,
+        functools.partial(measure, similar=similar),
+    )
+    return _compile_batch(
+        inputs,
+        paths,
+        budget,
+        model,
+        token_adapters,
+        optional_paths=_fitting_context(
             paths,
-            _described_candidates(inputs, related),
+            optional_sources,
             budget,
-            functools.partial(measure, similar=similar),
-        )
-        batches.append(
-            _compile_batch(
-                inputs,
-                paths,
-                budget,
-                model,
-                token_adapters,
-                optional_paths=_fitting_context(
-                    paths,
-                    optional_sources,
-                    budget,
-                    functools.partial(measure, similar=similar, described=described),
-                ),
-                similar=similar,
-                described=described,
-            )
-        )
-    return CompilePacking(tuple(batches), deferred)
+            functools.partial(measure, similar=similar, described=described),
+        ),
+        similar=similar,
+        described=described,
+    )
 
 
 def _oversized_pieces(
@@ -1006,7 +1015,15 @@ def _tokenizer_identity(count_source: str, model: str | None) -> str:
     return "utf8-byte-estimate/v1"
 
 
-def _refresh_compile_batch(batch: CompileBatch) -> CompileBatch:
+def _refresh_compile_batch(batch: CompileBatch) -> CompileBatch | None:
+    """The same pieces, with the notes as they are now; None when they no longer fit.
+
+    The batches before this one published notes, so the catalog grew and a
+    batch packed to the edge of the window could no longer be packed alike.
+    Re-grouping it then refused the whole run; the pieces stay as planned and
+    only the context beside them is chosen again. Pieces that no longer fit
+    even alone are left pending for the next run.
+    """
     context = snapshot_compile_inputs(())
     daily_sources = tuple(
         SourceSnapshot(item.logical_path, item.content, item.sha256)
@@ -1023,10 +1040,15 @@ def _refresh_compile_batch(batch: CompileBatch) -> CompileBatch:
         context.targets,
         context.vault_files,
     )
-    batches = pack_compile_batches(refreshed, model=None)
-    if len(batches) != 1 or batches[0].manifest != batch.manifest:
+    budget = _compile_budget(None)
+    measure = _batch_measure(refreshed, None, None)
+    paths = {item.part_key for item in refreshed.dailies}
+    if measure(paths) > budget.available_input_tokens:
+        return None
+    refreshed_batch = _packed_batch(refreshed, paths, budget, None, None, measure)
+    if refreshed_batch.manifest != batch.manifest:
         raise ValueError("compile batch changed while refreshing context")
-    return batches[0]
+    return refreshed_batch
 
 
 def _receipt_path(digest: str) -> Path:
@@ -5473,8 +5495,12 @@ def _run(
     _announce_packing(batches)
     outcomes: list[BatchOutcome] = []
     for batch in batches:
+        refreshed = _refresh_compile_batch(batch)
+        if refreshed is None:
+            _report_batch_left_pending(batch)
+            continue
         done = _run_batch(
-            _refresh_compile_batch(batch),
+            refreshed,
             args,
             coordinator=coordinator,
             deadline=deadline,
@@ -5488,6 +5514,14 @@ def _run(
     _mark_ok_unless_dry(args, outcomes=outcomes)
     print(f"compile_memory: done: {_outcome_sentence(outcomes)}.")
     return 0
+
+
+def _report_batch_left_pending(batch: CompileBatch) -> None:
+    days = sorted({item.logical_path for item in batch.inputs.dailies})
+    print(
+        f"compile_memory: {len(batch.inputs.dailies)} piece(s) of {', '.join(days)} no longer "
+        "fit beside the notes this run published; they stay pending for the next run."
+    )
 
 
 def _announce_compile(args: argparse.Namespace, dailies: Sequence[Path]) -> None:

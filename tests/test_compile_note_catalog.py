@@ -318,6 +318,32 @@ def test_a_catalog_too_long_to_describe_still_lists_every_note_and_compiles(
     assert (vault / "knowledge" / "notes" / "backend-renewal.md").exists()
 
 
+def test_a_batch_the_notes_published_before_it_crowd_out_stays_pending(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run went on refreshing each batch; a grown catalog used to refuse it whole."""
+    import compile_memory
+
+    monkeypatch.setenv(WINDOW_ENV, "16000")
+    daily = vault / "knowledge" / "daily" / f"{DAY}.md"
+    [batch] = compile_memory.pack_compile_batches(
+        compile_memory.snapshot_compile_inputs([daily]), model=None
+    )
+
+    refreshed = compile_memory._refresh_compile_batch(batch)
+    assert refreshed is not None
+    assert refreshed.manifest == batch.manifest
+
+    for index in range(150):
+        _note_file(
+            vault / "knowledge" / "notes" / f"published-topic-{index:03d}.md",
+            "type: concept\n",
+            f"Published topic {index}",
+            "A note an earlier batch of this run published.",
+        )
+    assert compile_memory._refresh_compile_batch(batch) is None
+
+
 def test_a_catalog_the_window_cannot_hold_refuses_the_compile_and_names_the_setting(
     vault: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -79,6 +79,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Notes published early in a run no longer refuse the rest of it.** Each batch
+  is refreshed with the vault as it is before it runs. The notes the earlier
+  batches published lengthen the catalog, and a batch packed to the edge of the
+  window was then re-grouped differently, which refused the whole run. A batch now
+  keeps its pieces and only its context is chosen again; pieces that no longer
+  fit even alone stay pending for the next run.
 - **A citation binds when a cut separates two entries of one second.** A breadcrumb
   and the entry after it often share a timestamp. When a long day was cut between
   them, the breadcrumb's part was taken without its quote being looked for, the
