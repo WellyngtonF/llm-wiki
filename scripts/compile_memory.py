@@ -3254,9 +3254,17 @@ def _ambiguous_block_message(
 
 
 def _sole_quote_offset(block: bytes, quote_bytes: bytes) -> int:
-    """An ambiguous quote is refused: one entry must name one span."""
+    """An ambiguous quote is refused: one entry must name one span.
+
+    A capture sometimes writes one line twice in an entry. Copies of one whole
+    line are the same evidence, so the first is taken; a quote found in two
+    different lines still names two spans and is refused.
+    """
     offsets = [match.start() for match in re.finditer(re.escape(quote_bytes), block)]
-    if len(offsets) != 1:
+    lines = {
+        block[slice(*_line_bounds(block, offset, len(quote_bytes)))] for offset in offsets
+    }
+    if len(lines) != 1:
         raise ValueError("compile evidence does not match the immutable snapshot")
     return offsets[0]
 

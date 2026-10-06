@@ -126,6 +126,39 @@ def test_a_quote_binds_to_the_one_part_that_holds_it_when_two_parts_share_its_ti
     assert binding["source_digest"] == parts[1].sha256
 
 
+def test_a_line_written_twice_in_one_entry_binds_to_its_first_copy(tmp_path, monkeypatch):
+    """A capture wrote one line twice in an entry; every plan citing it was refused (2026-10-06)."""
+    import compile_memory as compiler
+
+    monkeypatch.setattr(compiler, "ROOT", tmp_path)
+    line = b"- The entry day is the local day of its start."
+    content = b"## [12:21:02] session-end | a\n" + line + b"\n- Other.\n" + line + b"\n"
+    daily = compiler.DailySnapshot("knowledge/daily/2026-10-05.md", content, sha256_bytes(content))
+    inputs = compiler.CompileInputs((daily,), (), ())
+    evidence = {"daily_date": "2026-10-05", "timestamp": "12:21:02", "claim": "Stated.",
+                "quoted_text": line.decode()}
+
+    binding = compiler._evidence_binding(evidence, inputs)
+
+    start = content.index(line) + len(b"- ")
+    assert binding["reference"].endswith(f"bytes:{start}-{content.index(line) + len(line)}")
+
+
+def test_a_fragment_found_in_two_different_lines_is_still_refused(tmp_path, monkeypatch):
+    import compile_memory as compiler
+
+    monkeypatch.setattr(compiler, "ROOT", tmp_path)
+    content = (b"## [12:21:02] session-end | a\n- The lease expires at noon.\n"
+               b"- The lease expires at midnight.\n")
+    daily = compiler.DailySnapshot("knowledge/daily/2026-10-05.md", content, sha256_bytes(content))
+    inputs = compiler.CompileInputs((daily,), (), ())
+    evidence = {"daily_date": "2026-10-05", "timestamp": "12:21:02", "claim": "Stated.",
+                "quoted_text": "The lease expires at"}
+
+    with pytest.raises(ValueError, match="does not match the immutable snapshot"):
+        compiler._evidence_binding(evidence, inputs)
+
+
 def test_unknown_selector_is_not_silently_dropped():
     import compile_memory as compiler
 
