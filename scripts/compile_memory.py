@@ -3256,17 +3256,32 @@ def _ambiguous_block_message(
 def _sole_quote_offset(block: bytes, quote_bytes: bytes) -> int:
     """An ambiguous quote is refused: one entry must name one span.
 
-    A capture sometimes writes one line twice in an entry. Copies of one whole
-    line are the same evidence, so the first is taken; a quote found in two
-    different lines still names two spans and is refused.
+    A capture sometimes writes one line twice in an entry, or repeats it inside
+    a longer line. Copies of one line are the same evidence, so the first is
+    taken; a quote that is a whole line in one place and part of another line
+    elsewhere is that whole line. A quote found in two different lines and
+    whole in neither, or in both, still names two spans and is refused.
     """
     offsets = [match.start() for match in re.finditer(re.escape(quote_bytes), block)]
-    lines = {
-        block[slice(*_line_bounds(block, offset, len(quote_bytes)))] for offset in offsets
-    }
-    if len(lines) != 1:
+    if len(_lines_at(block, offsets, quote_bytes)) != 1:
+        offsets = [
+            offset
+            for offset in offsets
+            if _is_whole_line(block, offset, quote_bytes)
+        ]
+    if len(_lines_at(block, offsets, quote_bytes)) != 1:
         raise ValueError("compile evidence does not match the immutable snapshot")
     return offsets[0]
+
+
+def _lines_at(block: bytes, offsets: Sequence[int], quote_bytes: bytes) -> set[bytes]:
+    return {block[slice(*_line_bounds(block, offset, len(quote_bytes)))] for offset in offsets}
+
+
+def _is_whole_line(block: bytes, offset: int, quote_bytes: bytes) -> bool:
+    line = block[slice(*_line_bounds(block, offset, len(quote_bytes)))]
+    text = line.decode("utf-8", errors="replace").strip()
+    return _without_bullet(text) == quote_bytes.decode("utf-8", errors="replace")
 
 
 def _line_bounds(block: bytes, quote_offset: int, quote_length: int) -> tuple[int, int]:

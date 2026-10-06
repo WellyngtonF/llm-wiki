@@ -82,7 +82,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **A line captured twice in one entry can be cited.** A capture sometimes writes
   one line twice in an entry, and a quote of it found two spans, so every plan
   citing it was refused. Copies of one whole line are the same evidence, and the
-  first is bound; a quote found in two different lines is still refused.
+  first is bound; a quote found in two different lines is still refused. A quote
+  that is a whole line in one place and repeated inside a longer line elsewhere,
+  as a summary repeats a decision after a date, binds to the whole line.
 - **Notes published early in a run no longer refuse the rest of it.** Each batch
   is refreshed with the vault as it is before it runs. The notes the earlier
   batches published lengthen the catalog, and a batch packed to the edge of the

@@ -144,6 +144,25 @@ def test_a_line_written_twice_in_one_entry_binds_to_its_first_copy(tmp_path, mon
     assert binding["reference"].endswith(f"bytes:{start}-{content.index(line) + len(line)}")
 
 
+def test_a_whole_line_repeated_inside_a_longer_line_binds_to_the_whole_line(tmp_path, monkeypatch):
+    """A summary repeated a decision after a date prefix; every plan citing it was refused."""
+    import compile_memory as compiler
+
+    monkeypatch.setattr(compiler, "ROOT", tmp_path)
+    quote = "The entry day is the local day of its start."
+    content = (b"## [12:21:02] session-end | a\n- " + quote.encode() + b"\n"
+               + "- 2026-10-05 — - ".encode() + quote.encode() + b"\n")
+    daily = compiler.DailySnapshot("knowledge/daily/2026-10-05.md", content, sha256_bytes(content))
+    inputs = compiler.CompileInputs((daily,), (), ())
+    evidence = {"daily_date": "2026-10-05", "timestamp": "12:21:02", "claim": "Stated.",
+                "quoted_text": quote}
+
+    binding = compiler._evidence_binding(evidence, inputs)
+
+    start = content.index(quote.encode())
+    assert binding["reference"].endswith(f"bytes:{start}-{start + len(quote.encode())}")
+
+
 def test_a_fragment_found_in_two_different_lines_is_still_refused(tmp_path, monkeypatch):
     import compile_memory as compiler
 
