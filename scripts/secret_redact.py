@@ -78,6 +78,9 @@ _HIGH_ENTROPY_RE = re.compile(
     r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])"
 )
 _PURE_HEX_RE = re.compile(r"^[0-9a-f]+$")
+_CAMEL_IDENTIFIER_RE = re.compile(r"[a-z]*(?:[A-Z][a-z]+)+")
+_CAMEL_WORD_RE = re.compile(r"[A-Z]?[a-z]+")
+_VOWEL_RE = re.compile(r"[aeiouy]", re.IGNORECASE)
 _ENTROPY_THRESHOLD = 4.0
 _MIN_BASE64_SEGMENT = 3
 _MIN_BASE64_RUN = 16
@@ -235,10 +238,26 @@ def _segment_shape_is_path(segments: list[str]) -> bool:
     return max(len(segment) for segment in segments) < _MIN_BASE64_RUN
 
 
+def _looks_like_identifier(token: str) -> bool:
+    """A camel-case name built from pronounceable words is code, not a blob.
+
+    Measured need, 2026-10-14: a compiled note quoted a 42-letter method name
+    from an API, scored over the entropy threshold, and the publication guard
+    refused every compile from 2026-10-09 on. Every hump must be one capital
+    and a lowercase run holding a vowel; random base64 letters almost never
+    line up that way, so `QwErTy…` and `kTqWz…` still redact.
+    """
+    if _CAMEL_IDENTIFIER_RE.fullmatch(token) is None:
+        return False
+    return all(_VOWEL_RE.search(word) for word in _CAMEL_WORD_RE.findall(token))
+
+
 def _is_high_entropy(token: str) -> bool:
     if _PURE_HEX_RE.match(token):
         return False
     if _looks_like_path(token):
+        return False
+    if _looks_like_identifier(token):
         return False
     return _shannon_entropy(token) >= _ENTROPY_THRESHOLD
 

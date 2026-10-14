@@ -135,6 +135,28 @@ def test_a_path_whose_entropy_comes_from_joining_words_is_left_alone():
         assert redact_secrets(text) == text, shape
 
 
+_CODE_NAMES = (
+    "`RebuildInvoiceLedgerEntriesForClosedAccountingPeriod`",
+    "(`refreshCustomerPortfolioSnapshotAfterNightlyImport`)",
+    "GroupGeneratesEventsInSalesSummaryByExtractDate",
+)
+
+_LETTER_ONLY_BLOBS = (
+    "kTqWzRbNvXyLpHmJdFgCsQaZeUiOtYrWnBvMcXzLq",
+    "QwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGh",
+)
+
+
+def test_a_long_camel_case_name_is_code_not_a_secret():
+    """A quoted method name refused every nightly compile from 2026-10-09."""
+    from secret_redact import redact_secrets
+
+    for name in _CODE_NAMES:
+        assert redact_secrets(name) == name, name
+    for blob in _LETTER_ONLY_BLOBS:
+        assert "[REDACTED_TOKEN]" in redact_secrets(blob), blob
+
+
 def test_describe_error_names_the_class_and_the_redacted_message():
     from secret_redact import describe_error
 

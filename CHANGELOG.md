@@ -79,6 +79,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A long code name no longer blocks the compile.** A note that quoted a
+  42-letter camel-case method name scored as a secret, and the publication guard
+  refused every nightly compile from 2026-10-09. A camel-case run whose every word
+  holds a vowel is treated as code; random letter blobs still redact.
+- **The archive-publication invariant test takes 3 s, not 277 s.** It called
+  `ast.get_source_segment` per assignment, which re-splits the whole file each
+  time; the test now splits each script once.
 - **A line captured twice in one entry can be cited.** A capture sometimes writes
   one line twice in an entry, and a quote of it found two spans, so every plan
   citing it was refused. Copies of one whole line are the same evidence, and the
