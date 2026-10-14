@@ -29,6 +29,7 @@ from typing import Any, NamedTuple
 import integration_hook_config as _hook_config
 import process_liveness
 import reliable_memory
+from acknowledged_refusals import AcknowledgementError, acknowledge, read_acknowledged
 from bounded_io import read_stable_bytes
 from evidence_resolver import daily_pieces_compiled
 from install_control import validate_install_state
@@ -1228,11 +1229,15 @@ def _scan_transaction_database(
             details=details,
             states=states,
         )
-        details["quarantined_unresolved"] = _unresolved_quarantine(
+        open_attempts = _open_refused_attempts(
             database,
             transaction_columns,
             _CompiledDaySupersession(vault_root, state_root),
         )
+        total = (
+            _quarantined_total(database) if open_attempts is None else len(open_attempts)
+        )
+        _count_acknowledged(details, open_attempts, total, state_root)
         return None
 
 
@@ -1510,17 +1515,50 @@ def _unresolved_quarantine(
     changed with the fix. An attempt that intended no creation, or whose pages
     were never written, stays a finding: there something really was lost.
     """
-    if "parent_transaction_id" not in transaction_columns:
+    open_attempts = _open_refused_attempts(database, transaction_columns, supersession)
+    if open_attempts is None:
         return _quarantined_total(database)
+    return len(open_attempts)
+
+
+def _open_refused_attempts(
+    database: sqlite3.Connection,
+    transaction_columns: set[str],
+    supersession: _CompiledDaySupersession | None = None,
+) -> set[str] | None:
+    """The ids `_unresolved_quarantine` counts; None when lineage is unrecorded."""
+    if "parent_transaction_id" not in transaction_columns:
+        return None
     open_attempts = _quarantined_ids(database) - _resolved_by_lineage(database)
     if not open_attempts:
-        return 0
+        return set()
     committed_creates = _committed_created_paths(database)
-    return sum(
-        1
+    return {
+        identifier
         for identifier in open_attempts
         if not _attempt_is_history(database, identifier, committed_creates, supersession)
-    )
+    }
+
+
+def _count_acknowledged(
+    details: dict, open_attempts: set[str] | None, total: int, state_root: Path
+) -> None:
+    """Split the open attempts into findings and those the owner acknowledged (ADR 0007).
+
+    An acknowledgement file that cannot be read acknowledges nothing: every open
+    attempt stays a finding, and the code says why.
+    """
+    details["quarantined_unresolved"] = total
+    details["quarantined_acknowledged"] = 0
+    if not open_attempts:
+        return
+    try:
+        acknowledged = set(read_acknowledged(state_root))
+    except (OSError, ValueError):
+        details["codes"].append("refusal_acknowledgements_unreadable")
+        return
+    details["quarantined_acknowledged"] = len(open_attempts & acknowledged)
+    details["quarantined_unresolved"] = len(open_attempts - acknowledged)
 
 
 def _attempt_is_history(
@@ -1676,6 +1714,7 @@ def _empty_transaction_details() -> tuple[dict, dict[str, int]]:
         "live_writers": 0,
         "live_maintenance_owners": 0,
         "quarantined_unresolved": 0,
+        "quarantined_acknowledged": 0,
         "read_error": False,
         "state_invalid": False,
         "truncated_scans": [],
@@ -8186,6 +8225,38 @@ def degraded_summary(report: dict) -> str:
     return text[: SUMMARY_LIMIT - 3].rstrip() + "..."
 
 
+def acknowledge_refused(
+    requested: list[str],
+    reason: str,
+    *,
+    root: Path | str | None = None,
+    state_root: Path | str | None = None,
+) -> tuple[int, int]:
+    """Acknowledge open refused attempts; return (newly acknowledged, named).
+
+    Only an attempt doctor would report as an error can be acknowledged, so a
+    typo or a resolved id is refused instead of recorded.
+    """
+    root_path, state_path, _home = _resolved_doctor_paths(root, state_root, None)
+    path = _operational_database_path(state_path, "coordinator")
+    with _readonly_database(path, state_path) as database:
+        open_attempts = _open_refused_attempts(
+            database,
+            _columns(database, "transaction"),
+            _CompiledDaySupersession(root_path, state_path),
+        )
+    if open_attempts is None:
+        raise AcknowledgementError("this transaction database records no lineage")
+    if requested == ["open"]:
+        chosen = sorted(open_attempts)
+    else:
+        unknown = sorted(set(requested) - open_attempts)
+        if unknown:
+            raise AcknowledgementError("not an open refused attempt: " + ", ".join(unknown))
+        chosen = sorted(set(requested))
+    return acknowledge(state_path, chosen, reason), len(chosen)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check local LLM-Wiki health.")
     parser.add_argument("--repair", action="store_true", help="Apply safe idempotent repairs.")
@@ -8204,9 +8275,26 @@ def main(argv: list[str] | None = None) -> int:
             f"a budget exhaustion (default {DEFAULT_TIME_BUDGET_SECONDS:g})."
         ),
     )
+    parser.add_argument(
+        "--acknowledge-refused",
+        nargs="+",
+        metavar="ID",
+        help=(
+            "Acknowledge open refused attempts by transaction id, or `open` for every "
+            "attempt open now; they stop being errors and stay quarantined (ADR 0007)."
+        ),
+    )
+    parser.add_argument("--reason", help="Why; required with --acknowledge-refused.")
     args = parser.parse_args(argv)
     if not math.isfinite(args.time_budget) or args.time_budget <= 0:
         parser.error("--time-budget must be a positive number of seconds")
+    if args.acknowledge_refused:
+        try:
+            added, named = acknowledge_refused(args.acknowledge_refused, args.reason or "")
+        except AcknowledgementError as exc:
+            parser.error(str(exc))
+        print(f"Acknowledged {added} refused attempt(s); {named - added} already were.")
+        return 0
     report = run_doctor(
         repair=args.repair or args.rebuild_generation,
         rebuild_generation=args.rebuild_generation,

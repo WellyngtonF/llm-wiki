@@ -8,6 +8,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The owner can acknowledge a refused attempt** (ADR 0007). `doctor.py
+  --acknowledge-refused <id>... --reason <text>` (or `open`) records an attempt
+  doctor cannot prove resolved in `run/acknowledged-refusals.json`; doctor then
+  counts it as `quarantined_acknowledged`, not as an error. Nothing is deleted,
+  and the attempt still blocks deleting `run/`.
 - **Readable memory** (spec `docs/specs/2026-09-24-readable-memory.md`, ADRs
   0001–0003, glossary `CONTEXT.md`). Registered projects: the owner registers a
   project by asking an agent, through the new 13th MCP tool `manage_project`; the

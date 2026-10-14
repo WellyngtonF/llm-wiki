@@ -4129,6 +4129,59 @@ def test_a_refused_compile_of_a_day_still_uncompiled_needs_attention(tmp_path, m
     assert check["status"] == "error", check["details"]
 
 
+def _acknowledged_refusal(tmp_path, monkeypatch, *, ids: list[str], reason: str = "lost race, cause fixed"):
+    import doctor
+
+    check = _refused_compile_of_a_day(tmp_path, monkeypatch, compiled_now=False)
+    assert check["details"]["quarantined_unresolved"] == 1, check["details"]
+    root, state_root = tmp_path / "vault", tmp_path / "state"
+    added, named = doctor.acknowledge_refused(ids, reason, root=root, state_root=state_root)
+    after = _check(doctor.run_doctor(root=root, state_root=state_root, home=tmp_path / "home"), "transactions")
+    return added, named, after, state_root
+
+
+def test_an_acknowledged_refused_attempt_is_no_longer_an_error(tmp_path, monkeypatch):
+    """ADR 0007: the owner accepts an unprovable refusal; nothing is deleted."""
+    added, named, check, state_root = _acknowledged_refusal(tmp_path, monkeypatch, ids=["open"])
+
+    assert (added, named) == (1, 1)
+    assert check["details"]["quarantined_unresolved"] == 0, check["details"]
+    assert check["details"]["quarantined_acknowledged"] == 1, check["details"]
+    assert check["status"] == "ok", check["details"]
+    assert check["details"]["states"]["quarantined"] == 1
+    assert "transaction_quarantined" in check["details"]["deletion_codes"]
+    recorded = json.loads((state_root / "run" / "acknowledged-refusals.json").read_text(encoding="utf-8"))
+    assert recorded["acknowledged"]["a" * 32]["reason"] == "lost race, cause fixed"
+
+
+def test_only_an_open_refused_attempt_can_be_acknowledged(tmp_path, monkeypatch):
+    from acknowledged_refusals import AcknowledgementError
+
+    with pytest.raises(AcknowledgementError, match="not an open refused attempt"):
+        _acknowledged_refusal(tmp_path, monkeypatch, ids=["b" * 32])
+
+
+def test_an_acknowledgement_needs_a_reason(tmp_path, monkeypatch):
+    from acknowledged_refusals import AcknowledgementError
+
+    with pytest.raises(AcknowledgementError, match="reason"):
+        _acknowledged_refusal(tmp_path, monkeypatch, ids=["open"], reason="  ")
+
+
+def test_an_unreadable_acknowledgement_file_acknowledges_nothing(tmp_path, monkeypatch):
+    import doctor
+
+    _, _, _, state_root = _acknowledged_refusal(tmp_path, monkeypatch, ids=["open"])
+    (state_root / "run" / "acknowledged-refusals.json").write_text("{not json", encoding="utf-8")
+    check = _check(
+        doctor.run_doctor(root=tmp_path / "vault", state_root=state_root, home=tmp_path / "home"),
+        "transactions",
+    )
+
+    assert check["details"]["quarantined_unresolved"] == 1, check["details"]
+    assert "refusal_acknowledgements_unreadable" in check["details"]["codes"]
+
+
 def test_a_refused_attempt_staging_a_receipt_outside_the_days_needs_attention(tmp_path, monkeypatch):
     check = _refused_compile_of_a_day(
         tmp_path, monkeypatch, compiled_now=True, staged_day="knowledge/notes/not-a-day.md"

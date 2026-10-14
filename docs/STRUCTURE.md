@@ -124,6 +124,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   │   └── ready/<00-ff>/<id>.json   indexed intents awaiting terminal outcome
 │   ├── reliability-v3-migration.json approved resumable cutover manifest
 │   ├── reliability-v3-adopted.json   approved complete cutover evidence
+│   ├── acknowledged-refusals.json    refused attempts the owner acknowledged (ADR 0007)
 │   ├── queue/                        JSON queue of v3.3.0–v3.4.0: refused, never imported
 │   ├── queue-migrated-v2             marker of earlier releases, read by nothing
 │   ├── state.json                    automation + compile receipts
@@ -823,7 +824,10 @@ quarantined transaction, no transaction inside the 2-day undo window, and no
 retained queue task or result, and no live project lease, writer, queue worker, or
 maintenance or LSP owner, and no retained LSP failure evidence. Deleting eligible
 committed artifacts loses undo history.
-Installers and repair commands never remove it silently.
+Installers and repair commands never remove it silently. A refused attempt the owner
+acknowledged (`doctor.py --acknowledge-refused`, recorded in
+`run/acknowledged-refusals.json`, ADR 0007) stops being a health error but is still
+quarantined, so it still blocks deletion.
 
 The proposed Reliability v3 target additionally treats every unresolved capture
 intent, compiler, compatibility marker, retired database, missing or mismatched
