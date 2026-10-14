@@ -4158,7 +4158,9 @@ def _published_once(
     publication.assess_claims()
     with coordinator.writer_gate(owner=owner, wait_seconds=_publication_gate_wait(deadline)):
         coordinator.recover(owner=owner, deadline=deadline, cancelled=cancelled)
-        return publication.publish()
+        result = publication.publish()
+    publication.refresh_claim_index()
+    return result
 
 
 def _publication_gate_wait(deadline: float) -> float:
@@ -4264,6 +4266,7 @@ class _ApplyPlan:
         self.source_digests = sorted({item.sha256 for item in inputs.dailies})
         self.operations = _plan_operations(plan)
         self.claim_index: ClaimIndex | None = None
+        self.claim_index_stale = False
         self.claim_tree_manifest: dict[str, object] | None = None
         self.claim_groups: list[tuple[ContradictionPipeline, tuple[object, ...]]] = []
         self.changes: list[MarkdownChange] = []
@@ -4339,6 +4342,18 @@ class _ApplyPlan:
         )
         candidates.append(IndexedClaim(path, normalized, ledger_backed=False))
         return assessment
+
+    def refresh_claim_index(self) -> None:
+        """Rebuild the derived claim index after the writer gate is released.
+
+        Rebuilt under the gate it held every other writer for the whole rebuild:
+        117 s a batch before 71f0439f, while a hook's append gives up after 3 s.
+        Hundreds of tool breadcrumbs a day were lost that way (2026-09-26 to
+        2026-10-13). The index keeps its own lock and is disposable.
+        """
+        if self.claim_index_stale:
+            _rebuild_claim_index(self.claim_index)
+            self.claim_index_stale = False
 
     # -- publication, inside the writer gate ---------------------------------
 
@@ -4775,7 +4790,7 @@ class _ApplyPlan:
         committed, sequence = _transaction_authority(
             self.coordinator, self.operation_id
         )
-        _rebuild_claim_index(self.claim_index)
+        self.claim_index_stale = True
         _clear_compile_source_failures(self.inputs, self.coordinator.state_root)
         return CompileApplyResult(
             committed.id,

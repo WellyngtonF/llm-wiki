@@ -66,22 +66,46 @@ def test_a_model_call_is_still_refused_under_this_threads_own_gate(coordinators)
 class _Coordinator:
     def __init__(self) -> None:
         self.waits: list[float | None] = []
+        self.held = False
 
     @contextlib.contextmanager
     def writer_gate(self, *, owner=None, wait_seconds=None):
         self.waits.append(wait_seconds)
-        yield owner
+        self.held = True
+        try:
+            yield owner
+        finally:
+            self.held = False
 
     def recover(self, **_kwargs) -> None:
         return None
 
 
 class _Publication:
+    def __init__(self, coordinator: _Coordinator | None = None) -> None:
+        self.coordinator = coordinator
+        self.refreshed_under_gate: list[bool] = []
+
     def assess_claims(self) -> None:
         return None
 
     def publish(self) -> str:
         return "published"
+
+    def refresh_claim_index(self) -> None:
+        if self.coordinator is not None:
+            self.refreshed_under_gate.append(self.coordinator.held)
+
+
+def test_the_claim_index_is_rebuilt_after_the_gate_is_released():
+    """Rebuilt under the gate, it starved every hook append for minutes (2026-10-14)."""
+    import compile_memory
+
+    coordinator = _Coordinator()
+    publication = _Publication(coordinator)
+    compile_memory._published_once(publication, coordinator, None, math.inf, None)
+
+    assert publication.refreshed_under_gate == [False]
 
 
 def test_publication_waits_out_a_writer_longer_than_a_hook_would(monkeypatch):
