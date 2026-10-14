@@ -51,23 +51,39 @@ def _mentions_daily_archive(text: str) -> bool:
     return "daily" in lowered and "archive" in lowered
 
 
-def _assignment_sources(source: str, tree: ast.AST) -> list[str]:
+def _source_lines(source: str) -> list[bytes]:
+    """The source split once, as the UTF-8 lines AST column offsets count in."""
+    return [line.encode("utf-8") for line in source.split("\n")]
+
+
+def _segment(lines: list[bytes], node: ast.AST) -> str:
+    """`ast.get_source_segment` without re-splitting the whole file per node.
+
+    That call splits the full source every time; over the thousands of
+    assignments in the largest scripts it made this test take 277 s.
+    """
+    first, last = node.lineno - 1, node.end_lineno - 1
+    if first == last:
+        return lines[first][node.col_offset : node.end_col_offset].decode("utf-8")
+    pieces = [lines[first][node.col_offset :], *lines[first + 1 : last]]
+    pieces.append(lines[last][: node.end_col_offset])
+    return b"\n".join(pieces).decode("utf-8")
+
+
+def _assignment_sources(lines: list[bytes], tree: ast.AST) -> list[str]:
     return [
-        ast.get_source_segment(source, node) or ""
+        _segment(lines, node)
         for node in ast.walk(tree)
         if isinstance(node, (ast.Assign, ast.AnnAssign))
     ]
 
 
-def _archive_assignment(source: str, tree: ast.AST) -> bool:
-    return any(_mentions_daily_archive(text) for text in _assignment_sources(source, tree))
+def _archive_assignment(lines: list[bytes], tree: ast.AST) -> bool:
+    return any(_mentions_daily_archive(text) for text in _assignment_sources(lines, tree))
 
 
-def _archive_rename(source: str, renames: list[ast.Call]) -> bool:
-    return any(
-        _mentions_daily_archive(ast.get_source_segment(source, call) or "")
-        for call in renames
-    )
+def _archive_rename(lines: list[bytes], renames: list[ast.Call]) -> bool:
+    return any(_mentions_daily_archive(_segment(lines, call)) for call in renames)
 
 
 def _publishes_daily_archive(path: Path) -> bool:
@@ -77,7 +93,8 @@ def _publishes_daily_archive(path: Path) -> bool:
     renames = _rename_calls(tree)
     if not renames:
         return False
-    return _archive_assignment(source, tree) or _archive_rename(source, renames)
+    lines = _source_lines(source)
+    return _archive_assignment(lines, tree) or _archive_rename(lines, renames)
 
 
 def _parsed_module(py: Path) -> ast.AST | None:
