@@ -2256,6 +2256,26 @@ def _image_bytes(path: Path) -> bytes:
     return lzma.decompress(raw)
 
 
+def staged_image_content(raw: bytes, max_bytes: int) -> bytes:
+    """A staged image read by another module, refused past `max_bytes` once inflated.
+
+    Doctor read the compressed bytes as they lay on disk, so from 2026-09-05 no
+    refused compile could ever prove its day was compiled since.
+    """
+    if not raw.startswith(_LZMA_MAGIC):
+        return raw
+    import lzma
+
+    decompressor = lzma.LZMADecompressor()
+    try:
+        content = decompressor.decompress(raw, max_length=max_bytes + 1)
+    except lzma.LZMAError as exc:
+        raise ValueError("staged image is not a valid compressed image") from exc
+    if len(content) > max_bytes or not decompressor.eof:
+        raise ValueError("staged image exceeds its bound")
+    return content
+
+
 class _ArtifactRoots(NamedTuple):
     artifact: Path
     before: Path

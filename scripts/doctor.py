@@ -128,7 +128,7 @@ TRANSACTION_STATES = (
 QUEUE_STATES = ("ready", "leased", "blocked", "succeeded", "dead", "cancelled")
 # One source of truth for the window; it was 30 in four files. See
 # `docs/research/2026-09-02-where-undo-belongs-and-for-how-long.md`.
-from markdown_transaction import UNDO_RETENTION_DAYS  # noqa: E402
+from markdown_transaction import UNDO_RETENTION_DAYS, staged_image_content  # noqa: E402
 
 MAINTENANCE_LEASE_SECONDS = 120
 MAINTENANCE_HEARTBEAT_SECONDS = 40.0
@@ -1466,7 +1466,10 @@ class _CompiledDaySupersession:
     def _staged_day(self, directory: Path, artifact: str) -> str:
         if _STAGED_ARTIFACT_RE.fullmatch(artifact) is None:
             raise ValueError("staged artifact path is not a plain after/ artifact")
-        raw = read_runtime_bytes(directory / artifact, self.state_root, max_bytes=_MAX_STAGED_RECEIPT_BYTES)
+        raw = staged_image_content(
+            read_runtime_bytes(directory / artifact, self.state_root, max_bytes=_MAX_STAGED_RECEIPT_BYTES),
+            _MAX_STAGED_RECEIPT_BYTES,
+        )
         day = _staged_receipt_day(raw)
         if day is None:
             raise ValueError("staged artifact is not a compile receipt for a day")

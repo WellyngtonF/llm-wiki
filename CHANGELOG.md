@@ -83,6 +83,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   42-letter camel-case method name scored as a secret, and the publication guard
   refused every nightly compile from 2026-10-09. A camel-case run whose every word
   holds a vowel is treated as code; random letter blobs still redact.
+- **Doctor recognizes a refused compile whose day is compiled now.** Staged
+  images are lzma-compressed since 2026-09-05, and doctor read them raw, so no
+  refused compile since then could prove its day was compiled and each stayed an
+  `error` forever. Doctor now inflates them, bounded.
 - **A compile no longer spends an hour of CPU re-reading old days.** The claim
   index is rebuilt twice per batch, and each rebuild searched a day of up to
   730 KB again for every one of about 1 900 citations, which name only about 240

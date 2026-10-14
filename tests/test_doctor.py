@@ -4062,22 +4062,27 @@ def _day_receipt_path(logical_path: str, content: bytes) -> str:
     return f"knowledge/daily/receipts/v3-{identity}.md"
 
 
-def _stage_refused_receipts(state_root: Path, identifier: str, staged: dict[str, str]) -> None:
+def _stage_refused_receipts(
+    state_root: Path, identifier: str, staged: dict[str, str], *, compressed: bool = False
+) -> None:
     """The plan and `after` artifacts a refused compile left under run/transactions/."""
+    from markdown_transaction import _compressed_image
+
     directory = state_root / "run" / "transactions" / identifier
     (directory / "after").mkdir(parents=True, exist_ok=True)
     operations = []
     for position, (path, logical_path) in enumerate(sorted(staged.items()), start=1):
         artifact = f"after/{position:06d}.bin"
         record = json.dumps({"schema_version": "compile-receipt/v3", "source": {"logical_path": logical_path}})
-        (directory / artifact).write_bytes(
-            b"---\ntype: compile-receipt\n---\n\n## Record\n```json\n" + record.encode() + b"\n```\n"
-        )
+        image = b"---\ntype: compile-receipt\n---\n\n## Record\n```json\n" + record.encode() + b"\n```\n"
+        (directory / artifact).write_bytes(_compressed_image(image) if compressed else image)
         operations.append({"path": path, "kind": "create", "before": "absent", "after": {"artifact": artifact}})
     (directory / "plan.json").write_text(json.dumps({"operations": operations}), encoding="utf-8")
 
 
-def _refused_compile_of_a_day(tmp_path, monkeypatch, *, compiled_now: bool, staged_day: str = _REFUSED_DAY):
+def _refused_compile_of_a_day(
+    tmp_path, monkeypatch, *, compiled_now: bool, staged_day: str = _REFUSED_DAY, compressed: bool = False
+):
     import doctor
 
     root, state_root, home = _build_root(tmp_path)
@@ -4092,7 +4097,9 @@ def _refused_compile_of_a_day(tmp_path, monkeypatch, *, compiled_now: bool, stag
         [("a" * 32, "quarantined", None), ("b" * 32, "committed", None)],
         creates={"a" * 32: refused_receipts, "b" * 32: committed},
     )
-    _stage_refused_receipts(state_root, "a" * 32, {path: staged_day for path in refused_receipts})
+    _stage_refused_receipts(
+        state_root, "a" * 32, {path: staged_day for path in refused_receipts}, compressed=compressed
+    )
     return _check(doctor.run_doctor(root=root, state_root=state_root, home=home), "transactions")
 
 
@@ -4106,6 +4113,13 @@ def test_a_refused_compile_of_a_day_that_is_compiled_now_is_history(tmp_path, mo
 
     assert check["details"]["quarantined_unresolved"] == 0, check["details"]
     assert check["status"] == "ok", check["details"]
+
+
+def test_a_refused_compile_staged_as_the_writer_compresses_it_is_history(tmp_path, monkeypatch):
+    """Staged images are lzma since 2026-09-05; doctor read them raw and never resolved one."""
+    check = _refused_compile_of_a_day(tmp_path, monkeypatch, compiled_now=True, compressed=True)
+
+    assert check["details"]["quarantined_unresolved"] == 0, check["details"]
 
 
 def test_a_refused_compile_of_a_day_still_uncompiled_needs_attention(tmp_path, monkeypatch):
