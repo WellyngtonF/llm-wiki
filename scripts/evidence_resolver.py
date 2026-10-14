@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -1236,8 +1237,31 @@ def _slice_from(
     return None
 
 
+# Answers of `compile_part_slice`, keyed by the day's own hash and the part's.
+# Measured 2026-10-14: the claim index rebuilt twice per compile batch resolved
+# 1 893 citations naming only 242 distinct parts, each search rescanning a day
+# of up to 730 KB, so one rebuild took 117 s and a compile spent an hour of CPU.
+# The key is content-addressed, so a grown day misses instead of going stale.
+_PART_SLICE_MEMO: OrderedDict[tuple[str, str], tuple[int, int] | None] = OrderedDict()
+_PART_SLICE_MEMO_ENTRIES = 4096
+
+
 def compile_part_slice(content: bytes, digest: str) -> bytes | None:
-    """The exact bytes one compile part held, in a day that has grown since.
+    """The exact bytes one compile part held, in a day that has grown since."""
+    key = (sha256_bytes(content), digest)
+    if key in _PART_SLICE_MEMO:
+        _PART_SLICE_MEMO.move_to_end(key)
+        bounds = _PART_SLICE_MEMO[key]
+    else:
+        bounds = _part_slice_bounds(content, digest)
+        _PART_SLICE_MEMO[key] = bounds
+        if len(_PART_SLICE_MEMO) > _PART_SLICE_MEMO_ENTRIES:
+            _PART_SLICE_MEMO.popitem(last=False)
+    return None if bounds is None else content[bounds[0] : bounds[1]]
+
+
+def _part_slice_bounds(content: bytes, digest: str) -> tuple[int, int] | None:
+    """Where the part `compile_part_slice` looks for lies in this day.
 
     A page is written from one part of a day, so its evidence names that part's
     digest and offsets inside it — not the whole file. A day also keeps growing
@@ -1256,12 +1280,12 @@ def compile_part_slice(content: bytes, digest: str) -> bytes | None:
     for start in starts:
         found = _slice_from(content, start, digest)
         if found is not None:
-            return found
+            return start, start + len(found)
     offsets = _slice_offsets(content)
     for start, stop in _finer_piece_scans(content, set(starts)):
         found = _slice_from(content, start, digest, offsets=offsets, stop=stop)
         if found is not None:
-            return found
+            return start, start + len(found)
     return None
 
 

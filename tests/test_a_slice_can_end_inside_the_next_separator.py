@@ -60,3 +60,26 @@ def test_the_whole_file_is_still_a_candidate():
     whole = ENTRY + b"\n" + LATER
 
     assert compile_part_slice(whole, _digest(whole)) == whole
+
+
+def test_a_part_is_searched_once_per_day_content(monkeypatch):
+    """The claim index cites one part many times; a rebuild took 117 s rescanning it."""
+    import evidence_resolver
+
+    searches = []
+    search = evidence_resolver._part_slice_bounds
+
+    def counted(content, digest):
+        searches.append(digest)
+        return search(content, digest)
+
+    monkeypatch.setattr(evidence_resolver, "_part_slice_bounds", counted)
+    monkeypatch.setattr(evidence_resolver, "_PART_SLICE_MEMO", type(evidence_resolver._PART_SLICE_MEMO)())
+    grown = ENTRY + b"\n" + LATER
+
+    for _ in range(3):
+        assert compile_part_slice(grown, _digest(ENTRY)) == ENTRY
+    assert len(searches) == 1
+
+    assert compile_part_slice(grown + LATER, _digest(ENTRY)) == ENTRY
+    assert len(searches) == 2

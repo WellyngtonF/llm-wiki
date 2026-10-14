@@ -83,6 +83,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   42-letter camel-case method name scored as a secret, and the publication guard
   refused every nightly compile from 2026-10-09. A camel-case run whose every word
   holds a vowel is treated as code; random letter blobs still redact.
+- **A compile no longer spends an hour of CPU re-reading old days.** The claim
+  index is rebuilt twice per batch, and each rebuild searched a day of up to
+  730 KB again for every one of about 1 900 citations, which name only about 240
+  distinct parts: 117 s per rebuild. `compile_part_slice` now remembers each
+  answer by the day's hash and the part's: 17 s for the first rebuild, 3 s after.
 - **The archive-publication invariant test takes 3 s, not 277 s.** It called
   `ast.get_source_segment` per assignment, which re-splits the whole file each
   time; the test now splits each script once.
