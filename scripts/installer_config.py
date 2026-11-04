@@ -19,7 +19,7 @@ from typing import Any
 
 from integration_hook_config import MAX_CONFIG_BYTES  # one bound for the hook configuration
 from lsp_process_tree import ProcessTree
-from mcp_endpoint import OPENCODE_AUTHORIZATION, is_shared_url
+from mcp_endpoint import OPENCODE_AUTHORIZATION, client_entries, is_shared_url
 
 MAX_DEBUG_BYTES = 4 * 1024 * 1024
 DEBUG_TIMEOUT_SECONDS = 15.0
@@ -735,6 +735,7 @@ def configure_opencode(
     platform: str,
     debug_command: Sequence[str] | None = None,
     environment: Mapping[str, str] | None = None,
+    shared_mcp: bool = False,
 ) -> dict[str, str | None]:
     config_dir = opencode_global_dir(home, xdg_config_home, platform=platform)
     executable = shutil.which("opencode")
@@ -742,7 +743,9 @@ def configure_opencode(
         return {"config_file": None, "plugin_file": None, "status": "not_detected"}
 
     root = Path(root)
-    expected = expected_opencode_entry(root)
+    # ADR 0008: `--shared-mcp` points OpenCode at the one shared server; without
+    # it a shared entry already there is kept, never turned back into stdio.
+    expected = client_entries()["opencode"] if shared_mcp else expected_opencode_entry(root)
     merged = merge_opencode_user_config(config_dir, expected)
     plugin = config_dir / "plugins" / "llm-wiki-memory.js"
     _copy_plugin(root / "scripts" / "llm-wiki-memory-opencode.js", plugin, root)
@@ -811,6 +814,7 @@ def _parser() -> argparse.ArgumentParser:
     opencode.add_argument("--root", type=Path, required=True)
     opencode.add_argument("--state-root", type=Path, required=True)
     opencode.add_argument("--cwd", type=Path, required=True)
+    opencode.add_argument("--shared-mcp", action="store_true")
     cron = subparsers.add_parser("cron")
     cron.add_argument("--root", type=Path, required=True)
     cron.add_argument("--state-root", type=Path, required=True)
@@ -867,6 +871,7 @@ def _configure_opencode_command(args: argparse.Namespace) -> int:
         home=Path.home(),
         xdg_config_home=os.environ.get("XDG_CONFIG_HOME"),
         platform="windows" if os.name == "nt" else "posix",
+        shared_mcp=args.shared_mcp,
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, allow_nan=False))
     return 0

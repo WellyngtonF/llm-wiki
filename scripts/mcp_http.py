@@ -474,6 +474,28 @@ def _shutdown() -> None:
 # "this is slow".
 _WARMUP_LIMIT_SECONDS = 180.0
 
+# Every agent shares one pool here, where a stdio server had four slots for one
+# agent. Eight on this 12-thread machine: a slot is a thread, mostly waiting on
+# disk or a model, and one `mode=index` call may hold one for 600 s. Seven stdio
+# servers used to run seven torch pools on the same cores at once, so eight
+# slots in one process are still less contention than that. Bounded, so a typo
+# cannot start a thousand threads.
+SHARED_WORKER_SLOTS = 8
+WORKER_SLOTS_ENV = "LLMWIKI_MCP_WORKER_SLOTS"
+MAX_WORKER_SLOTS = 32
+
+
+def shared_worker_slots() -> int:
+    """The shared server's slot count: `LLMWIKI_MCP_WORKER_SLOTS`, else eight."""
+    raw = os.environ.get(WORKER_SLOTS_ENV, "").strip()
+    if not raw:
+        return SHARED_WORKER_SLOTS
+    try:
+        value = int(raw)
+    except ValueError:
+        return SHARED_WORKER_SLOTS
+    return min(max(value, 1), MAX_WORKER_SLOTS)
+
 
 def _warm_shared_surface() -> None:
     """Load every retrieval dependency before the first agent can ask anything.
@@ -618,6 +640,7 @@ def serve(
         _warm_shared_surface()
         # Before serving, as the stdio transport does: the event loop must never
         # start a thread (`mcp_server.start_mcp_worker_pool`).
+        mcp_server.MCP_WORKER_SLOTS = shared_worker_slots()
         mcp_server.start_mcp_worker_pool()
         config = uvicorn.Config(
             app, host=host, port=port, log_level="warning", access_log=False

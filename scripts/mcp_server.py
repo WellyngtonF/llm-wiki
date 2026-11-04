@@ -85,6 +85,8 @@ MAX_NAVIGATION_SOURCE_CACHE_BYTES = 64 * 1024 * 1024
 PRECISE_ARCHITECTURE_MODES = frozenset(
     {"definition", "references", "implementations", "type", "diagnostics"}
 )
+# One stdio server serves one agent. The shared HTTP server raises this before
+# its pool starts, because there every agent shares the slots (ADR 0008).
 MCP_WORKER_SLOTS = 4
 _MCP_WORKERS: set[concurrent.futures.Future] = set()
 _MCP_WORKERS_LOCK = threading.Lock()

@@ -500,3 +500,17 @@ def test_no_client_entry_holds_the_token():
     assert all(mcp_endpoint.is_shared_url(entry["url"]) for entry in entries.values())
     assert mcp_endpoint.TOKEN_ENV in json.dumps(entries)
     assert entries["codex"]["bearer_token_env_var"] == mcp_endpoint.TOKEN_ENV
+
+
+@pytest.mark.parametrize(
+    ("raw", "slots"),
+    [(None, 8), ("", 8), ("12", 12), ("0", 1), ("999", 32), ("many", 8)],
+)
+def test_the_shared_server_has_its_own_bounded_slot_count(monkeypatch, raw, slots):
+    import mcp_http
+
+    if raw is None:
+        monkeypatch.delenv(mcp_http.WORKER_SLOTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(mcp_http.WORKER_SLOTS_ENV, raw)
+    assert mcp_http.shared_worker_slots() == slots

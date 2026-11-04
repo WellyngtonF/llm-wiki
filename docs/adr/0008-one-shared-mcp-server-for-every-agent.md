@@ -11,9 +11,9 @@ The shared server is stateless. It keeps no MCP session, so nothing one agent di
 - `--ensure` binds the port before it loads any model. The bind is the single-instance guard: a second start exits 0 without loading anything. On Windows the socket is `SO_EXCLUSIVEADDRUSE`, so no other socket can take the port.
 - `POST /admin/shutdown`, behind the same guard, stops the server after the calls in flight. After a fast-forward that brought in new code, the nightly pass uses it to restart a running server (`mcp_endpoint.restart_shared_server`). A server that is not running stays stopped.
 - The token stays in `run/mcp-http/token`. The clients read it from the user environment variable `LLMWIKI_MCP_TOKEN`, so no agent configuration file holds the secret.
-- The four worker slots (`MCP_WORKER_SLOTS`) are now shared by every agent. A call that finds all four busy gets the existing `busy` answer and may retry.
+- Every agent now shares one worker pool. A stdio server keeps four slots for its one agent. The shared server has eight, set by `LLMWIKI_MCP_WORKER_SLOTS` and bounded at 32. A call that finds every slot busy gets the existing `busy` answer and may retry.
 - The LLM provider settings come from the server's environment, which is the user environment. They no longer come from each agent's `env` block, so every agent's `compile` call uses the same provider order.
-- The installer treats the HTTP entry as equivalent to the stdio one, for Codex and for OpenCode. A reinstall therefore does not switch an agent back to a server of its own. The installer does not yet write the HTTP entry or register the task itself.
+- The installer treats the HTTP entry as equivalent to the stdio one, for Codex and for OpenCode. A reinstall therefore does not switch an agent back to a server of its own. `install.ps1 -SharedMcp` registers the task, sets the token variable and writes the HTTP entry. It writes the entry where an agent has none, and it switches OpenCode's entry in place. For an existing Claude Code or Codex entry it prints the replacement instead. `install.sh` has no equivalent yet.
 
 ## Considered Options
 

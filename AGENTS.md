@@ -87,7 +87,11 @@ run/       # state, transactions, queue results, locks, install ownership
 actions (13 task-shaped tools, uniform response envelope, health/context
 resources). Native hooks, plugins, and wrappers are thin lifecycle adapters
 for events MCP cannot observe. Automatic health context is injected only when
-`doctor` reports degraded/error findings.
+`doctor` reports degraded/error findings. One opt-in shared MCP server
+(`scripts/mcp_http.py`, stateless Streamable HTTP on literal loopback, bearer
+token in `LLMWIKI_MCP_TOKEN`) may serve every agent instead of one stdio server per
+session; the `LLMWiki-McpHttp` logon task starts it and the nightly restarts it
+after an update. It answers MCP calls and nothing else — see ADR 0008.
 
 **Approved audit-closure contract (2026-08-15):** Cognee is retired from the
 supported product; existing `cache/cognee/` is disposable legacy cache and is not
@@ -139,7 +143,7 @@ logical evidence in immutable uncompressed BagIt packages. Claims with uncertain
 evidence or evaluator disagreement enter quarantine; automatic semantic supersession
 and eager backfill remain disabled. Do not delete `run/` while doctor reports a
 source failure, any 2-day undo artifact, retained work/result, or live owner. There
-is no persistent daemon, cloud service, remote queue/cache, exactly-once promise, or
+is no persistent daemon beyond the opt-in shared MCP server (ADR 0008), no cloud service, remote queue/cache, exactly-once promise, or
 gzip archive tier. The single automatic Git operation is the nightly fast-forward
 update of the checkout, which never pushes, never resolves a conflict, and declines
 whenever the update would touch a locally modified file — see

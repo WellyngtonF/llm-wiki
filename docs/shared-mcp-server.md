@@ -6,6 +6,10 @@ server loads them once and serves every agent over loopback HTTP. The decision i
 ADR 0008. The steps below are opt-in, and the stdio entry keeps working until you
 replace it.
 
+On Windows, `install.ps1 -SharedMcp` does steps 1 and 2. It also does step 3 for an
+agent that has no `llm-wiki` entry yet, and for OpenCode. For an existing Claude
+Code or Codex entry it prints the replacement.
+
 ## 1. Start the server at logon (Windows)
 
 ```powershell
@@ -83,5 +87,6 @@ equivalent to the stdio entry.
 Each call carries its own arguments, directory and deadline. The server keeps no
 MCP session, so no agent's call sees another agent's state, and a restart between
 two calls is invisible to the agents. The models, the language-server sessions and
-the four worker slots are shared. When all four slots are busy, a call gets the
-`busy` answer and can be retried.
+the worker slots are shared. There are eight slots, set by
+`LLMWIKI_MCP_WORKER_SLOTS`. When every slot is busy, a call gets the `busy` answer
+and can be retried.

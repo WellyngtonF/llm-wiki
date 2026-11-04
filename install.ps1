@@ -19,12 +19,18 @@
 #   8. Synchronizes runtime state and derived indexes
 #   9. Adopts the Reliability V3 queue so session capture works
 #
+# -SharedMcp (opt-in, ADR 0008): one MCP server for every agent instead of one
+# per session. Registers the LLMWiki-McpHttp logon task, puts the bearer token in
+# the user variable LLMWIKI_MCP_TOKEN, and registers the HTTP entry where an
+# agent has no llm-wiki entry yet (OpenCode's is switched in place).
+#
 # Safe to re-run. Idempotent.
 
 [CmdletBinding()]
 param(
     [switch]$ProtectPush,
-    [switch]$ConfirmAllAgentsStopped
+    [switch]$ConfirmAllAgentsStopped,
+    [switch]$SharedMcp
 )
 
 $ErrorActionPreference = "Stop"
@@ -161,7 +167,8 @@ function Get-CodexInlineHooksState(
 }
 function Install-CodexMcp(
     [string]$VaultRoot,
-    [string]$Config
+    [string]$Config,
+    [string]$SharedUrl = ""
 ) {
     $state = (& uv run --locked --no-sync --directory $VaultRoot python (Join-Path $VaultRoot "scripts\codex_memory.py") `
         config-state --config $Config --vault-root $VaultRoot | Out-String).Trim()
@@ -178,6 +185,13 @@ function Install-CodexMcp(
 command = "uv"
 args = ["run", "--locked", "--no-sync", "--directory", "$tomlVault", "python", "scripts/mcp_server.py"]
 "@
+    if ($SharedUrl -ne "") {
+        $block = @"
+[mcp_servers.llm-wiki]
+url = "$SharedUrl"
+bearer_token_env_var = "LLMWIKI_MCP_TOKEN"
+"@
+    }
     $encoding = [System.Text.UTF8Encoding]::new($false)
     if (Test-Path $Config) {
         Copy-Item -LiteralPath $Config -Destination "$Config.bak" -Force
@@ -458,13 +472,30 @@ try {
 Info "Detecting agents..."
 $agents = @()
 
+# One shared MCP server (ADR 0008): the task, then the token every agent reads.
+$sharedMcpUrl = ""
+if ($SharedMcp) {
+    & (Join-Path $VAULT_ROOT "scripts\install-mcp-http-task.ps1") -VaultRoot $VAULT_ROOT
+    $mcpToken = (& uv run --locked --no-sync --directory $VAULT_ROOT python `
+        (Join-Path $VAULT_ROOT "scripts\mcp_http.py") --print-token | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($mcpToken)) {
+        Fail "Shared MCP token could not be read"
+    }
+    [Environment]::SetEnvironmentVariable("LLMWIKI_MCP_TOKEN", $mcpToken, "User")
+    $env:LLMWIKI_MCP_TOKEN = $mcpToken
+    $sharedMcpUrl = "http://127.0.0.1:8765/mcp"
+    Ok "Shared MCP server registered -> $sharedMcpUrl (token in LLMWIKI_MCP_TOKEN)"
+}
+
 # OpenCode configuration is merged structurally and verified after all precedence layers.
-$openCodeResult = Invoke-NativeCommand uv @(
+$openCodeArgs = @(
     "run", "--locked", "--no-sync", "--directory", $VAULT_ROOT,
     "python", (Join-Path $VAULT_ROOT "scripts\installer_config.py"),
     "opencode", "--root", $VAULT_ROOT, "--state-root", $STATE_ROOT,
     "--cwd", $callerDirectory
-) -CaptureOutput -ReturnResult
+)
+if ($SharedMcp) { $openCodeArgs += "--shared-mcp" }
+$openCodeResult = Invoke-NativeCommand uv $openCodeArgs -CaptureOutput -ReturnResult
 $openCode = $openCodeResult.Output | ConvertFrom-Json
 switch ($openCode.status) {
     "active" {
@@ -494,10 +525,14 @@ if (Get-Command codex -ErrorAction SilentlyContinue) {
     $codexConfig = Join-Path $env:USERPROFILE ".codex\config.toml"
     $codexDir = Split-Path $codexConfig -Parent
     New-Item -ItemType Directory -Path $codexDir -Force | Out-Null
-    $codexMcpExit = Install-CodexMcp -VaultRoot $VAULT_ROOT -Config $codexConfig
+    $codexMcpExit = Install-CodexMcp -VaultRoot $VAULT_ROOT -Config $codexConfig -SharedUrl $sharedMcpUrl
     if ($codexMcpExit -eq 0) {
         $codexMcpReady = $true
         Ok "Codex MCP config verified -> $codexConfig"
+        if ($SharedMcp -and -not ([System.IO.File]::ReadAllText($codexConfig)).Contains("bearer_token_env_var")) {
+            Warn "Codex still starts its own MCP server; to share one, replace [mcp_servers.llm-wiki] with:"
+            Warn "  url = `"$sharedMcpUrl`" and bearer_token_env_var = `"LLMWIKI_MCP_TOKEN`""
+        }
     } elseif ($codexMcpExit -eq 2) {
         Warn "Existing Codex MCP entry conflicts with LLM-Wiki; config.toml was not changed. Merge manually."
     } else {
@@ -543,6 +578,13 @@ if ($claudeDetected) {
         command = "uv"
         args = @("run", "--locked", "--no-sync", "--directory", $VAULT_ROOT, "python", "scripts/mcp_server.py")
     }
+    if ($SharedMcp) {
+        $claudeEntryObject = [ordered]@{
+            type = "http"
+            url = $sharedMcpUrl
+            headers = [ordered]@{ Authorization = 'Bearer ${LLMWIKI_MCP_TOKEN}' }
+        }
+    }
     $claudeConfigObject = [ordered]@{
         mcpServers = [ordered]@{ "llm-wiki" = $claudeEntryObject }
     }
@@ -555,6 +597,9 @@ if ($claudeDetected) {
         $claudeExisting = Get-Content -LiteralPath $claudeMcp -Raw
         if ($claudeExisting -notmatch '"llm-wiki"\s*:') {
             Warn 'Existing ~/.claude.json found without llm-wiki; merge this under top-level "mcpServers":'
+            Warn "  $claudeMerge"
+        } elseif ($SharedMcp -and $claudeExisting -notmatch 'LLMWIKI_MCP_TOKEN') {
+            Warn 'Claude Code still starts its own MCP server; to share one, replace "llm-wiki" under "mcpServers" with:'
             Warn "  $claudeMerge"
         }
     }
@@ -678,6 +723,9 @@ if ($schedulerWarning) {
     Write-Host "Maintenance: Task Scheduler (nightly + weekly; logged-on user only)"
 }
 Write-Host "Code updates: $(Get-CodeUpdateNote $VAULT_ROOT)"
+if ($SharedMcp) {
+    Write-Host "Shared MCP:  LLMWiki-McpHttp at logon -> $sharedMcpUrl (restart the agent apps to read LLMWIKI_MCP_TOKEN)"
+}
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Restart terminal"

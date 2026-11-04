@@ -503,3 +503,35 @@ def test_a_remote_entry_elsewhere_is_still_a_conflict(tmp_path: Path) -> None:
     expected = expected_opencode_entry(tmp_path / "vault")
     remote = {**client_entries()["opencode"], "url": "http://example.com:8765/mcp"}
     assert verify_effective_entry({"mcp": {"llm-wiki": remote}}, expected) == "conflict"
+
+
+def test_configure_opencode_can_switch_to_the_shared_server(tmp_path: Path, monkeypatch) -> None:
+    """`--shared-mcp` replaces the per-session stdio entry with the shared one."""
+    from mcp_endpoint import client_entries
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    root = tmp_path / "vault"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "llm-wiki-memory-opencode.js").write_text(
+        "const _EMBEDDED_ROOT = null; // llm-wiki:embedded-root\n", encoding="utf-8"
+    )
+    xdg = tmp_path / "xdg"
+    (xdg / "opencode").mkdir(parents=True)
+    config = xdg / "opencode" / "opencode.json"
+    config.write_text(
+        json.dumps({"mcp": {"llm-wiki": expected_opencode_entry(root)}}), encoding="utf-8"
+    )
+
+    result = configure_opencode(
+        root=root,
+        state_root=tmp_path / "state",
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        xdg_config_home=str(xdg),
+        platform="posix",
+        shared_mcp=True,
+    )
+
+    assert result["status"] == "configured_unverified"
+    entry = parse_jsonc(config.read_text(encoding="utf-8"))["mcp"]["llm-wiki"]
+    assert entry == client_entries()["opencode"]
