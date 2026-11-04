@@ -173,3 +173,22 @@ def test_installer_optional_commands_are_additive() -> None:
         source = (ROOT / installer).read_text(encoding="utf-8")
         commands = set(re.findall(r'"  (uv sync --locked[^"\r\n]+)"', source))
         assert expected <= commands
+
+
+def test_codex_accepts_the_shared_server_entry(tmp_path) -> None:
+    """ADR 0008: the HTTP entry is equivalent, so a reinstall leaves it alone."""
+    import codex_memory
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[mcp_servers.llm-wiki]\nurl = "http://127.0.0.1:8765/mcp"\n'
+        'bearer_token_env_var = "LLMWIKI_MCP_TOKEN"\n',
+        encoding="utf-8",
+    )
+    assert codex_memory.codex_mcp_config_state(config, tmp_path) == "equivalent"
+    config.write_text(
+        '[mcp_servers.llm-wiki]\nurl = "http://example.com:8765/mcp"\n'
+        'bearer_token_env_var = "LLMWIKI_MCP_TOKEN"\n',
+        encoding="utf-8",
+    )
+    assert codex_memory.codex_mcp_config_state(config, tmp_path) == "conflict"

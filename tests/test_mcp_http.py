@@ -225,10 +225,11 @@ def test_origin_is_judged_before_the_token_so_the_refusal_names_the_reason():
 # ---------------------------------------------------------------------------
 
 
-async def _open_session(client) -> str:
+async def _open_session(client) -> str | None:
+    """Initialize as a client does; a stateless server issues no session id."""
     response = await client.post(ENDPOINT, headers=_headers(), json=_initialize_body())
     assert response.status_code == 200, response.text
-    session = response.headers["mcp-session-id"]
+    session = response.headers.get("mcp-session-id")
     await client.post(
         ENDPOINT,
         headers=_headers(**{"mcp-session-id": session}),
@@ -237,7 +238,7 @@ async def _open_session(client) -> str:
     return session
 
 
-async def _rpc(client, session: str, method: str, params=None) -> dict:
+async def _rpc(client, session: str | None, method: str, params=None) -> dict:
     body = {"jsonrpc": "2.0", "id": 2, "method": method}
     if params is not None:
         body["params"] = params
@@ -328,3 +329,174 @@ def test_the_shared_server_factory_is_what_both_transports_build():
     server = mcp_server.build_server()
     assert server.name == "llm-wiki"
     assert any("CallTool" in str(key) for key in server.request_handlers)
+
+
+# ---------------------------------------------------------------------------
+# One process for every agent (ADR 0008)
+# ---------------------------------------------------------------------------
+
+
+def test_the_shared_server_is_stateless():
+    """No session lives in the process, so a restart is invisible to a client."""
+
+    async def scenario():
+        app = _built_app()
+        async with _running(app), _client(app) as client:
+            response = await client.post(
+                ENDPOINT, headers=_headers(), json=_initialize_body()
+            )
+            assert response.status_code == 200, response.text
+            assert "mcp-session-id" not in response.headers
+            # A fresh client that never initialized on this process still
+            # gets an answer: what a client sees right after a restart.
+            return await _rpc(client, None, "tools/list")
+
+    payload = asyncio.run(scenario())
+    assert len(payload["result"]["tools"]) == 13
+
+
+def test_simultaneous_calls_from_two_agents_do_not_share_state(monkeypatch):
+    """Two agents, one process: each call keeps its own argument and deadline.
+
+    The barrier proves the calls overlapped inside the tool, so a result that
+    came back with the other agent's slug or deadline would be a real leak,
+    not two calls that happened one after the other.
+    """
+    import threading
+
+    import mcp_server
+
+    barrier = threading.Barrier(2, timeout=10)
+
+    def fake_read_page(slug, *, deadline=None):
+        barrier.wait()
+        observed = mcp_server._OPERATION_DEADLINE.get()
+        return {"slug": slug, "deadline_matches": observed == deadline}
+
+    monkeypatch.setattr(mcp_server, "_read_page", fake_read_page)
+
+    async def call(client, slug):
+        body = {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "read_page", "arguments": {"slug": slug}},
+        }
+        response = await client.post(ENDPOINT, headers=_headers(), json=body)
+        assert response.status_code == 200, response.text
+        return response.json()["result"]["structuredContent"]["data"]
+
+    async def scenario():
+        app = _built_app()
+        async with _running(app), _client(app) as first, _client(app) as second:
+            return await asyncio.gather(call(first, "alpha"), call(second, "beta"))
+
+    alpha, beta = asyncio.run(scenario())
+    assert (alpha["slug"], beta["slug"]) == ("alpha", "beta")
+    assert alpha["deadline_matches"] and beta["deadline_matches"]
+
+
+def _shutdown_app(stopped: list):
+    import mcp_http
+
+    return mcp_http.build_app(
+        token=TOKEN, host="127.0.0.1", port=8765, on_shutdown=lambda: stopped.append(True)
+    )
+
+
+async def _post_shutdown(app, **header_overrides):
+    async with _running(app), _client(app) as client:
+        return await client.post(
+            "http://127.0.0.1:8765/admin/shutdown", headers=_headers(**header_overrides)
+        )
+
+
+def test_the_shutdown_route_stops_the_server_for_a_valid_token():
+    stopped: list = []
+    response = asyncio.run(_post_shutdown(_shutdown_app(stopped)))
+    assert response.status_code == 202
+    assert stopped == [True]
+
+
+def test_the_shutdown_route_is_behind_the_same_guard():
+    stopped: list = []
+    response = asyncio.run(_post_shutdown(_shutdown_app(stopped), Authorization=None))
+    assert response.status_code == 401
+    assert stopped == []
+
+
+def test_the_shutdown_route_is_absent_without_a_stop_callback():
+    response = asyncio.run(_post_shutdown(_built_app()))
+    assert response.status_code == 404
+
+
+def test_a_second_server_cannot_take_the_port():
+    import mcp_http
+
+    first = mcp_http.bind_server_socket("127.0.0.1", 0)
+    try:
+        port = first.getsockname()[1]
+        with pytest.raises(OSError) as raised:
+            mcp_http.bind_server_socket("127.0.0.1", port)
+        assert mcp_http._address_in_use(raised.value)
+        assert mcp_http._bound_socket("127.0.0.1", port, ensure=True) is None
+        with pytest.raises(mcp_http.HttpSurfaceError):
+            mcp_http._bound_socket("127.0.0.1", port, ensure=False)
+    finally:
+        first.close()
+
+
+def test_ensure_exits_zero_when_the_port_is_taken(tmp_path, monkeypatch):
+    import mcp_http
+
+    monkeypatch.setattr(mcp_http, "_warm_shared_surface", lambda: pytest.fail("warmed"))
+    holder = mcp_http.bind_server_socket("127.0.0.1", 0)
+    try:
+        port = holder.getsockname()[1]
+        code = mcp_http.serve("127.0.0.1", port, tmp_path / "token", ensure=True)
+    finally:
+        holder.close()
+    assert code == 0
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def test_restart_leaves_a_stopped_server_stopped(tmp_path):
+    import mcp_endpoint
+
+    outcome = mcp_endpoint.restart_shared_server("127.0.0.1", _free_port(), tmp_path / "t")
+    assert outcome == {"status": "not_running"}
+
+
+@pytest.mark.parametrize(
+    ("url", "shared"),
+    [
+        ("http://127.0.0.1:8765/mcp", True),
+        ("http://[::1]:9000/mcp", True),
+        ("http://localhost:8765/mcp", False),
+        ("http://127.0.0.1:8765/mcp/", False),
+        ("http://127.0.0.1:/mcp", False),
+        ("https://example.com/mcp", False),
+        (None, False),
+    ],
+)
+def test_the_shared_url_is_literal_loopback_only(url, shared):
+    import mcp_endpoint
+
+    assert mcp_endpoint.is_shared_url(url) is shared
+
+
+def test_no_client_entry_holds_the_token():
+    import mcp_endpoint
+
+    entries = mcp_endpoint.client_entries()
+    assert set(entries) == {"claude", "codex", "opencode"}
+    assert all(mcp_endpoint.is_shared_url(entry["url"]) for entry in entries.values())
+    assert mcp_endpoint.TOKEN_ENV in json.dumps(entries)
+    assert entries["codex"]["bearer_token_env_var"] == mcp_endpoint.TOKEN_ENV

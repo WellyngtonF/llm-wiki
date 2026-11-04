@@ -19,6 +19,7 @@ from typing import Any
 
 from integration_hook_config import MAX_CONFIG_BYTES  # one bound for the hook configuration
 from lsp_process_tree import ProcessTree
+from mcp_endpoint import OPENCODE_AUTHORIZATION, is_shared_url
 
 MAX_DEBUG_BYTES = 4 * 1024 * 1024
 DEBUG_TIMEOUT_SECONDS = 15.0
@@ -354,7 +355,8 @@ def merge_opencode_user_config(
     original = _read_config_bytes(config)
     document = _config_document(original)
     mcp = _mcp_section(document)
-    if mcp.get("llm-wiki") == expected:
+    current = mcp.get("llm-wiki")
+    if current == expected or is_shared_server_entry(current):
         return ConfigMergeResult(False, config, None)
     mcp["llm-wiki"] = dict(expected)
     normalized = _normalized_config_bytes(document)
@@ -404,7 +406,25 @@ def verify_effective_entry(
 ) -> str:
     mcp = config.get("mcp")
     actual = mcp.get("llm-wiki") if isinstance(mcp, Mapping) else None
-    return "active" if actual == expected else "conflict"
+    if actual == expected or is_shared_server_entry(actual):
+        return "active"
+    return "conflict"
+
+
+def is_shared_server_entry(entry: object) -> bool:
+    """An OpenCode entry that reaches the one shared HTTP server (ADR 0008).
+
+    A reinstall keeps it: rewriting it back to a per-session stdio server would
+    silently undo the owner's choice of one process for every agent.
+    """
+    if not isinstance(entry, Mapping):
+        return False
+    return (
+        entry.get("type") == "remote"
+        and is_shared_url(entry.get("url"))
+        and entry.get("headers") == {"Authorization": OPENCODE_AUTHORIZATION}
+        and entry.get("enabled", True) is True
+    )
 
 
 def replace_profile_block(profile: Path, root: Path, state: Path) -> None:

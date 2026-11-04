@@ -41,32 +41,43 @@ connections."
 
 Run (explicit, opt-in; stdio stays the default and is unchanged):
 
-    uv run --locked --no-sync python scripts/mcp_http.py --port 8765
+    uv run --locked --no-sync python scripts/mcp_http.py --ensure
 
-Agent config:
+`--ensure` serves unless a server already holds the port, and then exits 0, so
+a logon task and a by-hand start never make two. `--restart` asks a running
+server to stop cleanly and starts it again; `--client-config` prints the entry
+each agent registers. ADR 0008.
 
-    {"mcpServers": {"llm-wiki": {"type": "http",
-      "url": "http://127.0.0.1:8765/mcp",
-      "headers": {"Authorization": "Bearer <contents of the token file>"}}}}
+One process serves every agent, so the transport is stateless: no MCP session
+lives in this process, nothing one client did shapes another client's call, and
+a restart between two calls is invisible to the client. The tools hold no
+per-session state - every call carries its own arguments and deadline.
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hmac
+import json
 import os
 import secrets
+import socket
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import mcp_endpoint  # noqa: E402
 import mcp_server  # noqa: E402
+from mcp_endpoint import (  # noqa: E402
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    MCP_ENDPOINT_PATH,
+    SHUTDOWN_PATH,
+)
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
-MCP_ENDPOINT_PATH = "/mcp"
 # Literal addresses only. "localhost" is a name, and a name is resolved.
 LITERAL_LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 LOOPBACK_PEERS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
@@ -118,9 +129,7 @@ def allowed_host_headers(host: str, port: int) -> tuple[str, ...]:
 
 def default_token_path() -> Path:
     """The token lives with the rest of the runtime state, under `run/`."""
-    from memory_state import STATE_DIR
-
-    return Path(STATE_DIR) / "mcp-http" / "token"
+    return mcp_endpoint.default_token_path()
 
 
 def _private_mode_is_enforceable() -> bool:
@@ -323,12 +332,13 @@ def _security_settings(host: str, port: int):
     )
 
 
-def _session_manager(server, host: str, port: int, json_response: bool):
+def _session_manager(server, host: str, port: int, json_response: bool, stateless: bool):
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
     return StreamableHTTPSessionManager(
         app=server,
         json_response=json_response,
+        stateless=stateless,
         security_settings=_security_settings(host, port),
     )
 
@@ -347,7 +357,23 @@ class _StreamableEndpoint:
         await self.manager.handle_request(scope, receive, send)
 
 
-def _mounted_app(manager):
+def _shutdown_route(on_shutdown):
+    """`POST /admin/shutdown`: stop after the calls in flight, behind the same guard.
+
+    How the nightly pass brings a running server onto freshly updated code
+    without killing a model mid-inference (`mcp_endpoint.restart_shared_server`).
+    """
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def shutdown(_request):
+        on_shutdown()
+        return PlainTextResponse("stopping\n", status_code=202)
+
+    return Route(SHUTDOWN_PATH, shutdown, methods=["POST"])
+
+
+def _mounted_app(manager, on_shutdown=None):
     from starlette.applications import Starlette
     from starlette.routing import Route
 
@@ -356,12 +382,16 @@ def _mounted_app(manager):
         async with manager.run():
             yield
 
-    route = Route(
-        MCP_ENDPOINT_PATH,
-        _StreamableEndpoint(manager),
-        methods=["GET", "POST", "DELETE"],
-    )
-    return Starlette(routes=[route], lifespan=lifespan)
+    routes = [
+        Route(
+            MCP_ENDPOINT_PATH,
+            _StreamableEndpoint(manager),
+            methods=["GET", "POST", "DELETE"],
+        )
+    ]
+    if on_shutdown is not None:
+        routes.append(_shutdown_route(on_shutdown))
+    return Starlette(routes=routes, lifespan=lifespan)
 
 
 def build_app(
@@ -371,6 +401,8 @@ def build_app(
     port: int = DEFAULT_PORT,
     json_response: bool = True,
     server=None,
+    stateless: bool = True,
+    on_shutdown=None,
 ):
     """Build the guarded ASGI application around one shared MCP server."""
     require_loopback_host(host)
@@ -379,9 +411,10 @@ def build_app(
         host,
         port,
         json_response,
+        stateless,
     )
     return LoopbackGuard(
-        _mounted_app(manager),
+        _mounted_app(manager, on_shutdown),
         token=token,
         allowed_hosts=allowed_host_headers(host, port),
     )
@@ -507,30 +540,93 @@ def _run_warmup_query() -> None:
     mcp_server.warmup_retrieval_path(_WARMUP_LIMIT_SECONDS)
 
 
+_ADDRESS_IN_USE = frozenset({errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", 10048)})
+
+
+def bind_server_socket(host: str, port: int) -> socket.socket:
+    """Take the port for this process alone, before any model is loaded.
+
+    The bind is the single-instance guard: the operating system refuses a second
+    holder, so a logon task and a by-hand start cannot both pay a 5 GB warm-up.
+    On Windows a socket that sets SO_REUSEADDR may take over a bound port unless
+    the holder set SO_EXCLUSIVEADDRUSE; POSIX keeps SO_REUSEADDR so a restart is
+    not refused by connections still in TIME_WAIT.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        # Listening now lets a client that connects during the warm-up wait in
+        # the backlog instead of being refused.
+        sock.listen(128)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _address_in_use(error: OSError) -> bool:
+    return (
+        error.errno in _ADDRESS_IN_USE
+        or getattr(error, "winerror", None) in _ADDRESS_IN_USE
+    )
+
+
+def _bound_socket(host: str, port: int, ensure: bool) -> socket.socket | None:
+    """The listening socket, or None when `ensure` finds a server already there."""
+    try:
+        return bind_server_socket(host, port)
+    except OSError as error:
+        if ensure and _address_in_use(error):
+            return None
+        raise HttpSurfaceError(f"cannot bind {host}:{port}: {error}") from error
+
+
 def serve(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     token_path: Path | None = None,
+    *,
+    ensure: bool = False,
 ) -> int:
-    """Serve the shared surface until interrupted. Returns an exit code."""
+    """Serve the shared surface until interrupted or asked to stop."""
     import uvicorn
 
     _require_mcp_available()
     host = require_loopback_host(host)
     path = Path(token_path) if token_path is not None else default_token_path()
     token = ensure_token(path)
-    app = build_app(token=token, host=host, port=port)
+    sock = _bound_socket(host, port, ensure)
+    if sock is None:
+        print(f"llm-wiki MCP is already serving on {host}:{port}", file=sys.stderr)
+        return 0
+    running: dict[str, object] = {}
+
+    def stop() -> None:
+        running["server"].should_exit = True
+
+    app = build_app(token=token, host=host, port=port, on_shutdown=stop)
     _announce(host, port, path)
-    # After the announce, so the operator can already see the endpoint and the
-    # token file while this runs; before serving, because a warm-up that races
-    # the first questions is the thing being fixed, not the fix.
-    _warm_shared_surface()
-    config = uvicorn.Config(
-        app, host=host, port=port, log_level="warning", access_log=False
-    )
     try:
-        uvicorn.Server(config).run()
+        # After the announce, so the operator can already see the endpoint and
+        # the token file while this runs; before serving, because a warm-up
+        # that races the first questions is the thing being fixed, not the fix.
+        _warm_shared_surface()
+        # Before serving, as the stdio transport does: the event loop must never
+        # start a thread (`mcp_server.start_mcp_worker_pool`).
+        mcp_server.start_mcp_worker_pool()
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level="warning", access_log=False
+        )
+        server = uvicorn.Server(config)
+        running["server"] = server
+        server.run(sockets=[sock])
     finally:
+        sock.close()
         _shutdown()
     return 0
 
@@ -547,7 +643,57 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the token to stdout and exit, without serving",
     )
+    parser.add_argument(
+        "--ensure",
+        action="store_true",
+        help="exit 0 without serving when a server already holds the port",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="stop a running server cleanly and start it again",
+    )
+    parser.add_argument(
+        "--client-config",
+        action="store_true",
+        help="print the llm-wiki entry each agent registers, as JSON",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="append the server's output here (default when run without a console)",
+    )
     return parser
+
+
+def _redirect_output(log_file: str | None) -> None:
+    """Give a console-less server (`pythonw`, the logon task) somewhere to write.
+
+    Without a console `sys.stderr` is None, and the warm-up report, uvicorn's
+    errors and the shutdown notes would be lost.
+    """
+    if log_file is None and sys.stderr is not None:
+        return
+    path = Path(log_file) if log_file else mcp_endpoint.server_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stream = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - process lifetime
+    sys.stdout = sys.stderr = stream
+
+
+def _restart(arguments) -> int:
+    outcome = mcp_endpoint.restart_shared_server(
+        require_loopback_host(arguments.host),
+        arguments.port,
+        Path(arguments.token_file) if arguments.token_file else None,
+    )
+    print(json.dumps(outcome))
+    return 0 if outcome["status"] in {"restarted", "not_running"} else 1
+
+
+def _print_client_config(arguments) -> int:
+    host = require_loopback_host(arguments.host)
+    print(json.dumps(mcp_endpoint.client_entries(host, arguments.port), indent=2))
+    return 0
 
 
 def _print_token(token_path: Path | None) -> int:
@@ -558,10 +704,17 @@ def _print_token(token_path: Path | None) -> int:
 
 def main(argv=None) -> int:
     arguments = _parser().parse_args(argv)
+    _redirect_output(arguments.log_file)
     try:
         if arguments.print_token:
             return _print_token(arguments.token_file)
-        return serve(arguments.host, arguments.port, arguments.token_file)
+        if arguments.client_config:
+            return _print_client_config(arguments)
+        if arguments.restart:
+            return _restart(arguments)
+        return serve(
+            arguments.host, arguments.port, arguments.token_file, ensure=arguments.ensure
+        )
     except HttpSurfaceError as error:
         print(str(error), file=sys.stderr)
         return 2

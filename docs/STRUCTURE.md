@@ -45,6 +45,8 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 │   ├── reflection.py                v4.0: A-MEM page consolidation
 │   ├── mcp_server.py                v4.0: MCP server (13 task-shaped tools, stdio)
 │   ├── mcp_stdio.py                 stdio transport on private fds; the loop starts no thread
+│   ├── mcp_http.py                  one shared MCP server over loopback HTTP (ADR 0008)
+│   ├── mcp_endpoint.py              where the shared server listens; stop and restart it
 │   ├── integration_adapter.py       v4.x: thin native lifecycle adapter
 │   ├── event_envelope.py            v4.x: shared lifecycle event contract
 │   ├── mcp_contract.py              v4.x: uniform MCP response envelope/resources
@@ -814,6 +816,8 @@ graph-dependent code tools use bounded live extraction and label it incomplete.
   `owner.json` and `failure.json`. Existing `run/queue/*.json` is refused and
   named, never imported (2026-09-23). The approved audit-closure target adds `run/install/` for
   manifest-owned install, rollback, scheduler, and external-preimage state.
+  `run/mcp-http/token` is the shared MCP server's bearer token (ADR 0008); the
+  server writes its output to `logs/mcp-http.log` when it has no console.
 - `cache/cognee/` — retired disposable legacy cache. It has no supported reader and
   is never removed automatically.
 

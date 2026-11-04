@@ -476,3 +476,30 @@ def test_configure_opencode_merges_global_source_and_copies_plugin(
     assert f"const _EMBEDDED_ROOT = {encoded_root};" in published
     assert published.replace(encoded_root, "null") == plugin_source.read_text(encoding="utf-8")
     assert (caller / "debug.cwd").read_text(encoding="utf-8") == str(caller)
+
+
+def test_a_reinstall_keeps_the_shared_server_entry(tmp_path: Path) -> None:
+    """ADR 0008: the installer must not turn the shared server back into stdio."""
+    from mcp_endpoint import client_entries
+
+    shared = client_entries()["opencode"]
+    config_dir = tmp_path / "opencode"
+    config_dir.mkdir()
+    config = config_dir / "opencode.json"
+    config.write_text(json.dumps({"mcp": {"llm-wiki": shared}}), encoding="utf-8")
+    original = config.read_bytes()
+    expected = expected_opencode_entry(tmp_path / "vault")
+
+    result = merge_opencode_user_config(config_dir, expected)
+
+    assert result.changed is False
+    assert config.read_bytes() == original
+    assert verify_effective_entry({"mcp": {"llm-wiki": shared}}, expected) == "active"
+
+
+def test_a_remote_entry_elsewhere_is_still_a_conflict(tmp_path: Path) -> None:
+    from mcp_endpoint import client_entries
+
+    expected = expected_opencode_entry(tmp_path / "vault")
+    remote = {**client_entries()["opencode"], "url": "http://example.com:8765/mcp"}
+    assert verify_effective_entry({"mcp": {"llm-wiki": remote}}, expected) == "conflict"

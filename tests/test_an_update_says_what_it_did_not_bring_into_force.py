@@ -124,3 +124,48 @@ def test_a_refused_update_logs_nothing_extra() -> None:
     scheduled_nightly._log_update_aftermath(lines.append, {"status": "skipped", "reason": "detached_head"})
 
     assert lines == []
+
+
+def _nightly_update(monkeypatch, status: str) -> tuple[list[str], list[bool]]:
+    import mcp_endpoint
+
+    restarts: list[bool] = []
+    monkeypatch.setattr(self_update, "update_checkout", lambda _root: {"status": status})
+    monkeypatch.setattr(
+        mcp_endpoint,
+        "restart_shared_server",
+        lambda: restarts.append(True) or {"status": "restarted", "via": "task"},
+    )
+    lines: list[str] = []
+    scheduled_nightly._update_code(lines.append)
+    return lines, restarts
+
+
+def test_an_update_restarts_a_running_shared_server(monkeypatch) -> None:
+    """ADR 0008: the one shared server would otherwise keep the old code."""
+    lines, restarts = _nightly_update(monkeypatch, "updated")
+
+    assert restarts == [True]
+    assert "  shared MCP: {'status': 'restarted', 'via': 'task'}" in lines
+
+
+def test_no_update_leaves_the_shared_server_alone(monkeypatch) -> None:
+    lines, restarts = _nightly_update(monkeypatch, "current")
+
+    assert restarts == []
+    assert not any("shared MCP" in line for line in lines)
+
+
+def test_a_failed_restart_never_fails_the_night(monkeypatch) -> None:
+    import mcp_endpoint
+
+    def broken():
+        raise OSError("no route")
+
+    monkeypatch.setattr(self_update, "update_checkout", lambda _root: {"status": "updated"})
+    monkeypatch.setattr(mcp_endpoint, "restart_shared_server", broken)
+    lines: list[str] = []
+
+    scheduled_nightly._update_code(lines.append)
+
+    assert any(line.startswith("  shared MCP restart skipped:") for line in lines)

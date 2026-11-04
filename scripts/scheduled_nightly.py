@@ -634,6 +634,8 @@ def _update_code(log) -> None:
     if outcome.get("detail"):
         log(f"  update: {outcome['detail']}")
     _log_update_aftermath(log, outcome)
+    if outcome.get("status") == "updated":
+        _restart_shared_mcp(log)
 
 
 def _log_update_aftermath(log, outcome: dict) -> None:
@@ -646,6 +648,24 @@ def _log_update_aftermath(log, outcome: dict) -> None:
     extras = ", ".join(outcome.get("extras") or ()) or "none"
     log(f"  update: dependencies {outcome.get('dependencies')}; extras not upgraded: {extras}")
     log(f"  update: owned resources {outcome.get('resources')}")
+
+
+def _restart_shared_mcp(log) -> None:
+    """Bring a running shared MCP server onto the code the update brought in.
+
+    A per-session stdio server reads new code when the next session starts; the
+    one shared server would otherwise run the old code until logoff (ADR 0008).
+    A server that is not running is left alone, and a failed restart is logged,
+    never a reason to fail the night.
+    """
+    try:
+        from mcp_endpoint import restart_shared_server
+
+        outcome = restart_shared_server()
+    except Exception as exc:  # noqa: BLE001 - a restart is never a reason to fail
+        log(f"  shared MCP restart skipped: {describe_error(exc)}")
+        return
+    log(f"  shared MCP: {outcome}")
 
 
 def _prune_reports(log) -> None:

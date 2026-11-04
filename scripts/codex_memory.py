@@ -703,12 +703,25 @@ def _mcp_expected_args(vault_root: Path) -> list[str]:
     ]
 
 
+def _is_shared_server_entry(table: dict[str, Any]) -> bool:
+    """The entry that reaches the one shared HTTP server instead (ADR 0008)."""
+    from mcp_endpoint import TOKEN_ENV, is_shared_url
+
+    return (
+        "command" not in table
+        and is_shared_url(table.get("url"))
+        and table.get("bearer_token_env_var") == TOKEN_ENV
+    )
+
+
 def _mcp_entry_state(table: dict[str, Any], vault_root: Path) -> str:
-    equivalent = (
+    stdio = (
         table.get("command") == "uv"
         and table.get("args") == _mcp_expected_args(vault_root)
-        and table.get("enabled", True) is True
     )
+    equivalent = (stdio or _is_shared_server_entry(table)) and table.get(
+        "enabled", True
+    ) is True
     if equivalent:
         return "equivalent"
     return "conflict"
