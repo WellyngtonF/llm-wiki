@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -472,6 +473,37 @@ def test_restart_leaves_a_stopped_server_stopped(tmp_path):
 
     outcome = mcp_endpoint.restart_shared_server("127.0.0.1", _free_port(), tmp_path / "t")
     assert outcome == {"status": "not_running"}
+
+
+def test_the_task_is_started_only_after_its_old_instance_ends(monkeypatch):
+    """`IgnoreNew` silently drops a start that arrives while the old one runs."""
+    import mcp_endpoint
+
+    states = iter(["Ready", "Running", "Running", "Ready"])
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mcp_endpoint.os, "name", "nt")
+    monkeypatch.setattr(mcp_endpoint, "_task_state", lambda: next(states))
+    monkeypatch.setattr(mcp_endpoint.time, "sleep", lambda _seconds: None)
+
+    def run(command, **_options):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(mcp_endpoint.subprocess, "run", run)
+    assert mcp_endpoint._run_scheduled_task() is True
+    assert calls == [["schtasks", "/Run", "/TN", mcp_endpoint.TASK_NAME]]
+    assert next(states, "exhausted") == "exhausted", "the start waited for the old instance"
+
+
+def test_a_restart_that_never_listens_says_so(monkeypatch, tmp_path):
+    import mcp_endpoint
+
+    monkeypatch.setattr(mcp_endpoint, "request_shutdown", lambda *_args: "stopping")
+    monkeypatch.setattr(mcp_endpoint, "wait_until_stopped", lambda *_args: True)
+    monkeypatch.setattr(mcp_endpoint, "start_server", lambda *_args: "task")
+    monkeypatch.setattr(mcp_endpoint, "wait_until_listening", lambda *_args: False)
+    outcome = mcp_endpoint.restart_shared_server("127.0.0.1", _free_port(), tmp_path / "t")
+    assert outcome == {"status": "not_started", "via": "task"}
 
 
 @pytest.mark.parametrize(

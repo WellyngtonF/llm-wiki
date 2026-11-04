@@ -157,9 +157,67 @@ def wait_until_stopped(host: str, port: int, seconds: float = STOP_WAIT_SECONDS)
     return not is_listening(host, port)
 
 
+START_WAIT_SECONDS = 30
+
+
+def wait_until_listening(host: str, port: int, seconds: float = START_WAIT_SECONDS) -> bool:
+    """The server binds before it warms, so listening means it started."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if is_listening(host, port):
+            return True
+        time.sleep(0.5)
+    return is_listening(host, port)
+
+
+def _task_state() -> str | None:
+    """The logon task's state (`Running`, `Ready`, ...), or None without one.
+
+    Read through PowerShell because `schtasks /Query` prints it localized.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"(Get-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction Stop).State",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=REQUEST_SECONDS * 3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+def _wait_until_task_idle(seconds: float = STOP_WAIT_SECONDS) -> bool:
+    """Wait for the old task instance to end.
+
+    The server stops listening before its process exits, and the task runs with
+    `MultipleInstances IgnoreNew`: a start that arrives while the old instance
+    still counts as running is dropped without an error.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _task_state() != "Running":
+            return True
+        time.sleep(0.5)
+    return _task_state() != "Running"
+
+
 def _run_scheduled_task() -> bool:
     """Start the logon task, so the new server runs where the old one did."""
-    if os.name != "nt":
+    if os.name != "nt" or _task_state() is None:
+        return False
+    if not _wait_until_task_idle():
         return False
     try:
         completed = subprocess.run(
@@ -232,4 +290,7 @@ def restart_shared_server(
         return {"status": "not_stopped", "reason": stopped}
     if not wait_until_stopped(host, port):
         return {"status": "not_stopped", "reason": "stop_timeout"}
-    return {"status": "restarted", "via": start_server(host, port)}
+    via = start_server(host, port)
+    if not wait_until_listening(host, port):
+        return {"status": "not_started", "via": via}
+    return {"status": "restarted", "via": via}
