@@ -53,13 +53,16 @@ if ($Uninstall) {
 
 $pythonw = Join-Path $VaultRoot ".venv\Scripts\pythonw.exe"
 $script = Join-Path $VaultRoot "scripts\mcp_http.py"
+# Named explicitly: the venv's pythonw is a launcher that starts the base
+# python.exe, which has a stderr, so the server cannot tell it has no console.
+$logFile = Join-Path $VaultRoot "logs\mcp-http.log"
 foreach ($required in @($pythonw, $script)) {
     if (-not (Test-Path -LiteralPath $required)) { throw "missing: $required" }
 }
 
 $action = New-ScheduledTaskAction `
     -Execute $pythonw `
-    -Argument "`"$script`" --ensure --port $Port" `
+    -Argument "`"$script`" --ensure --port $Port --log-file `"$logFile`"" `
     -WorkingDirectory $VaultRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # ExecutionTimeLimit zero is "no limit": the server lives for the logon session.
