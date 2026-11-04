@@ -16,7 +16,10 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
+# Not 8765: that port is a common default for local dev servers, and on the
+# owner's machine another agent already held it (2026-11-04). Below Windows'
+# dynamic range (49152+), so the system never hands it out to a client socket.
+DEFAULT_PORT = 47615
 MCP_ENDPOINT_PATH = "/mcp"
 SHUTDOWN_PATH = "/admin/shutdown"
 # The clients read the bearer token from this user environment variable, so no
@@ -115,6 +118,34 @@ def is_listening(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> bool:
     with socket.socket(family, socket.SOCK_STREAM) as probe:
         probe.settimeout(1.0)
         return probe.connect_ex((host, port)) == 0
+
+
+IDENTITY_SECONDS = 3.0
+
+
+def holder_identity(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> str:
+    """Who holds the port: `llm_wiki`, `llm_wiki_warming`, `other` or `nobody`.
+
+    An unauthenticated request to our endpoint is refused with 401 and the
+    `llm-wiki` realm; nothing else answers that way. A server that is still
+    warming has bound and listens but does not answer yet.
+    """
+    shown = f"[{host}]" if ":" in host else host
+    request = urllib.request.Request(f"http://{shown}:{port}{MCP_ENDPOINT_PATH}", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=IDENTITY_SECONDS):
+            return "other"
+    except urllib.error.HTTPError as error:
+        realm = error.headers.get("www-authenticate", "")
+        return "llm_wiki" if error.code == 401 and 'realm="llm-wiki"' in realm else "other"
+    except TimeoutError:
+        return "llm_wiki_warming"
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            return "llm_wiki_warming"
+        return "nobody" if not is_listening(host, port) else "other"
+    except OSError:
+        return "nobody" if not is_listening(host, port) else "other"
 
 
 def wait_until_stopped(host: str, port: int, seconds: float = STOP_WAIT_SECONDS) -> bool:

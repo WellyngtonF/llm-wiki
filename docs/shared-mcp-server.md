@@ -17,7 +17,7 @@ Code or Codex entry it prints the replacement.
 ```
 
 This registers and starts the `LLMWiki-McpHttp` task. The server binds
-`127.0.0.1:8765` and takes about 30 seconds to warm before it answers. Calls that
+`127.0.0.1:47615` and takes about 30 seconds to warm before it answers. Calls that
 arrive during the warm-up wait their turn instead of being refused. Its output goes
 to `logs/mcp-http.log`. Check the task with `-Status`, remove it with `-Uninstall`.
 
@@ -52,7 +52,7 @@ Claude Code, `~/.claude.json` under `mcpServers`:
 ```json
 "llm-wiki": {
   "type": "http",
-  "url": "http://127.0.0.1:8765/mcp",
+  "url": "http://127.0.0.1:47615/mcp",
   "headers": { "Authorization": "Bearer ${LLMWIKI_MCP_TOKEN}" }
 }
 ```
@@ -62,7 +62,7 @@ Codex, `~/.codex/config.toml`. Delete `command`, `args` and the
 
 ```toml
 [mcp_servers.llm-wiki]
-url = "http://127.0.0.1:8765/mcp"
+url = "http://127.0.0.1:47615/mcp"
 bearer_token_env_var = "LLMWIKI_MCP_TOKEN"
 ```
 
@@ -71,7 +71,7 @@ OpenCode, `opencode.json(c)` under `mcp`:
 ```json
 "llm-wiki": {
   "type": "remote",
-  "url": "http://127.0.0.1:8765/mcp",
+  "url": "http://127.0.0.1:47615/mcp",
   "headers": { "Authorization": "Bearer {env:LLMWIKI_MCP_TOKEN}" },
   "enabled": true
 }

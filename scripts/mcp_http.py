@@ -603,9 +603,22 @@ def _bound_socket(host: str, port: int, ensure: bool) -> socket.socket | None:
     try:
         return bind_server_socket(host, port)
     except OSError as error:
-        if ensure and _address_in_use(error):
+        if ensure and _address_in_use(error) and _held_by_llm_wiki(host, port):
             return None
         raise HttpSurfaceError(f"cannot bind {host}:{port}: {error}") from error
+
+
+def _held_by_llm_wiki(host: str, port: int) -> bool:
+    """Only our own server makes `--ensure` a no-op; another program is an error.
+
+    On 2026-11-04 another agent's server held the old default port, and
+    `--ensure` exited 0 as if the shared server were up.
+    """
+    identity = mcp_endpoint.holder_identity(host, port)
+    if identity in {"llm_wiki", "llm_wiki_warming"}:
+        return True
+    print(f"port {host}:{port} is held by another program ({identity})", file=sys.stderr)
+    return False
 
 
 def serve(

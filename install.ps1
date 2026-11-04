@@ -483,7 +483,7 @@ if ($SharedMcp) {
     }
     [Environment]::SetEnvironmentVariable("LLMWIKI_MCP_TOKEN", $mcpToken, "User")
     $env:LLMWIKI_MCP_TOKEN = $mcpToken
-    $sharedMcpUrl = "http://127.0.0.1:8765/mcp"
+    $sharedMcpUrl = "http://127.0.0.1:47615/mcp"
     Ok "Shared MCP server registered -> $sharedMcpUrl (token in LLMWIKI_MCP_TOKEN)"
 }
 

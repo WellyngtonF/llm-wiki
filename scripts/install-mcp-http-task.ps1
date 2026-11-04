@@ -16,7 +16,7 @@
 
 param(
     [Parameter(Mandatory = $true)][string]$VaultRoot,
-    [int]$Port = 8765,
+    [int]$Port = 47615,
     [switch]$Uninstall,
     [switch]$Status,
     [switch]$NoStart

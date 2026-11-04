@@ -514,3 +514,51 @@ def test_the_shared_server_has_its_own_bounded_slot_count(monkeypatch, raw, slot
     else:
         monkeypatch.setenv(mcp_http.WORKER_SLOTS_ENV, raw)
     assert mcp_http.shared_worker_slots() == slots
+
+
+@contextlib.contextmanager
+def _http_holder(status: int, headers: dict):
+    """A stand-in program on a port, answering every GET the same way."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the stdlib's name
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_ensure_refuses_a_port_another_program_holds(tmp_path, monkeypatch):
+    """2026-11-04: another agent held the port and `--ensure` reported success."""
+    import mcp_http
+
+    monkeypatch.setattr(mcp_http, "_warm_shared_surface", lambda: pytest.fail("warmed"))
+    with _http_holder(200, {}) as port:
+        with pytest.raises(mcp_http.HttpSurfaceError):
+            mcp_http.serve("127.0.0.1", port, tmp_path / "token", ensure=True)
+
+
+def test_the_llm_wiki_refusal_identifies_our_own_server():
+    import mcp_endpoint
+
+    ours = {"WWW-Authenticate": 'Bearer realm="llm-wiki"'}
+    with _http_holder(401, ours) as port:
+        assert mcp_endpoint.holder_identity("127.0.0.1", port) == "llm_wiki"
+    with _http_holder(401, {"WWW-Authenticate": 'Bearer realm="other"'}) as port:
+        assert mcp_endpoint.holder_identity("127.0.0.1", port) == "other"
+    assert mcp_endpoint.holder_identity("127.0.0.1", _free_port()) == "nobody"
