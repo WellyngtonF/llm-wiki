@@ -2376,7 +2376,8 @@ For example "reports a generic message and hides the resolver detail" is one err
 behavior, not two mutually exclusive has-state values for "legacy flow". Prefer one
 well-grounded claim to several redundant fragments. Never invent a changed state.
 Return an object with operations in the semantic compile format.
-List related notes as bare [[slug]] links. Each must name the slug of a catalog
+List related notes as bare [[slug]] links: each entry of `related` is a string that
+keeps the double brackets, such as "[[some-note]]", never the slug alone. Each must name the slug of a catalog
 entry or of a page created in this same plan; the compiler drops any other link and
 never links a page to itself. A link written in body_markdown follows the same rule;
 one naming no such note is turned into plain text.
