@@ -30,7 +30,7 @@ Before changing **structure, paths, env contracts, or runtime location**:
 4. Only then write code.
 Never improvise architectural decisions mid-task. When unsure, ask.
 
-Read `CONTEXT.md` first and use its vocabulary. ADRs and `CONTEXT.md` are
+Read `GLOSSARY.md` first and use its vocabulary. ADRs and `GLOSSARY.md` are
 public: keep private knowledge out of them (no real notes, project names or
 paths). This fork records product decisions there, not in `knowledge/notes/`
 (ADR 0001).

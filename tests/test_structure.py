@@ -366,7 +366,7 @@ def test_agent_contract_mentions_three_zone_process_rule():
 
 def test_the_sign_off_rule_records_product_decisions_as_public_adrs():
     """ADR 0001: product decisions live in docs/adr/, the vocabulary in
-    CONTEXT.md, and the fork is where improvements are pushed.
+    GLOSSARY.md, and the fork is where improvements are pushed.
     """
     contract = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     sign_off = contract.split("### Architecture changes require explicit sign-off", 1)[
@@ -376,14 +376,14 @@ def test_the_sign_off_rule_records_product_decisions_as_public_adrs():
     improve = contract.split('"Improve the system"', 1)[1].split("\n- ", 1)[0]
 
     assert (ROOT / "AGENTS.md").read_bytes() == (ROOT / "CLAUDE.md").read_bytes()
-    assert "`CONTEXT.md`" in sign_off
+    assert "`GLOSSARY.md`" in sign_off
     assert "`docs/adr/`" in sign_off
     assert "`NNNN-slug.md`" in sign_off
     assert "private knowledge" in sign_off_words
     assert "`docs/STRUCTURE.md`" in sign_off
     assert "`knowledge/notes/` (decision page)" not in sign_off
     assert "WellyngtonF/llm-wiki" in improve
-    assert (ROOT / "CONTEXT.md").is_file()
+    assert (ROOT / "GLOSSARY.md").is_file()
     assert sorted((ROOT / "docs" / "adr").glob("0001-*.md"))
 
 

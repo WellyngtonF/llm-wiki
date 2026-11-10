@@ -1,7 +1,7 @@
 """Module tags on notes: what a tag is, and how a note's `tags:` grows.
 
 Stage 3 of `docs/specs/2026-09-24-readable-memory.md`, issue #22. A tag names a
-module, an area inside a repository, never the project itself (`CONTEXT.md`). The
+module, an area inside a repository, never the project itself (`GLOSSARY.md`). The
 compile's model proposes tags; this module decides what is kept:
 
 - a tag is lowercase kebab-case of at most `MAX_TAG_CHARS`; anything else is

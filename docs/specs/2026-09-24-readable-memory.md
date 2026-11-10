@@ -1,7 +1,7 @@
 # Readable memory: healthy compile, working links, real projects, better notes
 
 Status: ready for implementation, one stage at a time, in the order 0 → 1 → 2 → 3 → 5.
-Vocabulary: `CONTEXT.md`. Decisions: `docs/adr/0001` (the fork diverges from upstream),
+Vocabulary: `GLOSSARY.md`. Decisions: `docs/adr/0001` (the fork diverges from upstream),
 `docs/adr/0002` (a project is a registered product made of repositories),
 `docs/adr/0003` (Obsidian is the human reading surface).
 
@@ -70,7 +70,7 @@ Stage 4 (cleaning the existing notes' content) is deferred; see Out of Scope.
 9. As the owner, I want the code-navigation server to be reinstalled, and if it still cannot be verified, reported as informational, so that an optional feature does not look like a failure.
 10. As the owner, I want the evidence generation that was registered but never activated to be diagnosed and fixed, so that retrieval uses a current index.
 11. As the owner, I want to see that Codex sessions are captured again after I re-approved its hooks, so that I know no host is silently missing.
-12. As an agent, I want the operating contract to point at `CONTEXT.md` and `docs/adr/`, so that I use the right vocabulary and respect recorded decisions.
+12. As an agent, I want the operating contract to point at `GLOSSARY.md` and `docs/adr/`, so that I use the right vocabulary and respect recorded decisions.
 
 ### Implementation decisions
 
@@ -82,7 +82,7 @@ Stage 4 (cleaning the existing notes' content) is deferred; see Out of Scope.
 - The code-navigation server is reinstalled through its supported installer. If its identity still cannot be verified, doctor reports it as informational.
 - The never-activated evidence generation is diagnosed first. Its fix is decided from the finding. Root cause: unknown at the time of writing.
 - Failure counters are cleared after the fixes land. They are cleared only once they are known to be false.
-- The agent contract files (`AGENTS.md` and `CLAUDE.md`, which must stay byte-identical) point to `CONTEXT.md` and `docs/adr/`. Product decisions are recorded there from now on, per ADR 0001.
+- The agent contract files (`AGENTS.md` and `CLAUDE.md`, which must stay byte-identical) point to `GLOSSARY.md` and `docs/adr/`. Product decisions are recorded there from now on, per ADR 0001.
 
 ### Testing decisions
 
