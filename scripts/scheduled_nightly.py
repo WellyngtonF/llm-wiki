@@ -376,10 +376,13 @@ def _post_compile_steps() -> list[_Step]:
     return [
         _pages_step(),
         _Step(
+            # 120 s was outrun on 2026-11-12: the evidence check resolves every
+            # citation against a day that keeps growing, and a busy machine
+            # turned a 50-60 s lint into a timeout.
             "Step 3: structural lint...",
             "lint",
             _script("lint_memory.py"),
-            120,
+            300,
         ),
         _Step(
             # Issue #24, section A: the timer half of the background refresh.
