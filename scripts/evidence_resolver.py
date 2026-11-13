@@ -1188,12 +1188,18 @@ def _slice_boundaries(
     piece known to be short, and the end of the file then counts only inside it.
 
     Sorted and deduplicated because `_slice_from` hashes forward from one
-    candidate to the next and needs them ascending.
+    candidate to the next and needs them ascending. `offsets` must be ascending
+    too, as `_slice_offsets` returns them: the scan starts after `start` by
+    bisection and ends at the first offset past `stop`, instead of walking the
+    whole day for every candidate start (2026-11-13: a lint of this vault spent
+    51 of its 77 s here).
     """
+    ordered = _slice_offsets(content) if offsets is None else offsets
     ends: set[int] = set()
-    for offset in _slice_offsets(content) if offsets is None else offsets:
-        if offset > start and (stop is None or offset <= stop):
-            ends.update(end for end in _entry_ends(content, offset) if end > start)
+    for offset in ordered[bisect.bisect_right(ordered, start) :]:
+        if stop is not None and offset > stop:
+            break
+        ends.update(end for end in _entry_ends(content, offset) if end > start)
     ends.discard(len(content))
     tail = [len(content)] if stop is None or len(content) <= stop else []
     return [*sorted(ends)[: MAX_EVIDENCE_SLICE_CANDIDATES - 1], *tail]
@@ -1277,11 +1283,11 @@ def _part_slice_bounds(content: bytes, digest: str) -> tuple[int, int] | None:
     starts = sorted({start for start, _end in (
         *_marker_part_bounds(content), *_daily_part_bounds(content)
     )})
+    offsets = _slice_offsets(content)
     for start in starts:
-        found = _slice_from(content, start, digest)
+        found = _slice_from(content, start, digest, offsets=offsets)
         if found is not None:
             return start, start + len(found)
-    offsets = _slice_offsets(content)
     for start, stop in _finer_piece_scans(content, set(starts)):
         found = _slice_from(content, start, digest, offsets=offsets, stop=stop)
         if found is not None:
