@@ -3661,14 +3661,20 @@ def _doctor_report_codes(report: dict) -> list:
 
 
 def _doctor_status(context: dict) -> dict:
-    from doctor import run_doctor
+    """The doctor report, with the checks that need attention named in `summary`.
+
+    `codes` also carries every run-deletion blocker, sorted, so its first codes
+    are retention notices such as `capture_intent_retained`; a warning built from
+    them hid the failing check (2026-11-13). `summary` names the checks instead.
+    """
+    from doctor import degraded_summary, run_doctor
 
     report = run_doctor(
         root=context["root"],
         state_root=context["state_root"],
         deadline=context["deadline"],
     )
-    return _operator_result(
+    result = _operator_result(
         "status",
         ids=[str(check["id"]) for check in report["checks"]][: context["limit"]],
         states=[str(report["overall_status"])],
@@ -3676,6 +3682,8 @@ def _doctor_status(context: dict) -> dict:
         counts={key: int(value) for key, value in report["counts"].items()},
         overall_status=str(report["overall_status"]),
     )
+    result["summary"] = degraded_summary(report)
+    return result
 
 
 def _queue_database_path(context: dict) -> Path:
@@ -5077,6 +5085,9 @@ def _graph_completeness_quality(data) -> dict:
 
 
 def _doctor_warning(prefix: str, data) -> str:
+    summary = data.get("summary") if isinstance(data, dict) else None
+    if summary:
+        return f"Doctor status is {data.get('overall_status')}: {summary}"
     codes = data.get("codes", []) if isinstance(data, dict) else []
     if not codes:
         return f"{prefix}."

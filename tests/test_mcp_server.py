@@ -3126,6 +3126,35 @@ class TestHandleToolCall:
         assert envelope["partial"] is True
         assert envelope["confidence"] < 0.5
 
+    def test_doctor_status_warning_names_the_failing_check(self, monkeypatch):
+        import doctor
+        import mcp_server
+
+        report = {
+            "overall_status": "error",
+            "counts": {"ok": 1, "degraded": 0, "error": 1, "skipped": 0},
+            "checks": [
+                {"id": "queue", "status": "ok", "message": "fine", "details": {}},
+                {
+                    "id": "scheduler",
+                    "status": "error",
+                    "message": "Last nightly maintenance failed.",
+                    "details": {"codes": []},
+                },
+            ],
+            "run_deletion": {"blockers": [{"code": "capture_intent_retained"}]},
+        }
+        monkeypatch.setattr(doctor, "run_doctor", lambda **kwargs: report)
+
+        data = mcp_server._doctor_status(
+            {"root": None, "state_root": None, "deadline": None, "limit": 20}
+        )
+        quality = mcp_server._quality_of_doctor("doctor", data, {}, False)
+
+        assert quality["warnings"] == [
+            "Doctor status is error: scheduler (error): Last nightly maintenance failed."
+        ]
+
     def test_transaction_recover_passes_limit_and_deadline_not_post_slice(
         self, monkeypatch
     ):
