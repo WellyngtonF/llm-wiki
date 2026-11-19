@@ -1028,6 +1028,66 @@ def test_apply_parent_identity_change_quarantines_and_releases_gate(
     assert unrelated.state == "prepared"
 
 
+def _renumbered_volume(coordinator, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The kernel hands the volume a new st_dev, as macOS does at boot."""
+    parent_identity = coordinator._parent_identity
+    monkeypatch.setattr(
+        coordinator,
+        "_parent_identity",
+        lambda path: (parent_identity(path)[0] + 1, parent_identity(path)[1]),
+    )
+    real_stat_identity = markdown_transaction._stat_identity
+    monkeypatch.setattr(
+        markdown_transaction,
+        "_stat_identity",
+        lambda metadata: (
+            real_stat_identity(metadata)[0] + 1,
+            real_stat_identity(metadata)[1],
+        ),
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a Windows volume serial is stable")
+def test_a_transaction_prepared_before_a_reboot_applies_after_it(
+    vault: Path, state_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ADR 0009: a renumbered volume is not a moved parent directory."""
+    target = vault / "knowledge/notes/page.md"
+    target.write_bytes(b"before")
+    coordinator = MarkdownCoordinator(vault, state_root)
+    transaction = coordinator.prepare(
+        [MarkdownChange.replace("knowledge/notes/page.md", b"after")],
+        operation_id="prepared-before-reboot",
+    )
+    _renumbered_volume(coordinator, monkeypatch)
+
+    applied = coordinator.apply(transaction.id)
+
+    assert applied.state == "committed"
+    assert target.read_bytes() == b"after"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a Windows volume serial is stable")
+def test_recovery_after_a_reboot_does_not_quarantine_a_renumbered_parent(
+    vault: Path, state_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = vault / "knowledge/notes/page.md"
+    target.write_bytes(b"before")
+    coordinator = MarkdownCoordinator(vault, state_root)
+    transaction = coordinator.prepare(
+        [MarkdownChange.replace("knowledge/notes/page.md", b"after")],
+        operation_id="recovered-after-reboot",
+    )
+    _renumbered_volume(coordinator, monkeypatch)
+
+    recovered = coordinator.recover()
+
+    assert [(record.id, record.error_code) for record in recovered] != [
+        (transaction.id, "parent_identity_changed")
+    ]
+    assert all(record.state != "quarantined" for record in recovered)
+
+
 def test_recover_reparse_change_quarantines_and_does_not_block_prepare(
     vault: Path, state_root: Path, monkeypatch: pytest.MonkeyPatch
 ):

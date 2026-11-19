@@ -1622,6 +1622,20 @@ def _stat_identity(metadata: object) -> tuple[int, int]:
     )
 
 
+def _same_parent_directory(current: tuple[int, int], recorded: object) -> bool:
+    """Whether a recorded parent identity names the directory measured now.
+
+    POSIX `st_dev` is assigned at mount, and macOS renumbers APFS volumes at
+    boot, so on POSIX a transaction prepared before a reboot compares the inode
+    alone (ADR 0009). A Windows volume serial is stable and stays compared.
+    """
+    if not isinstance(recorded, tuple) or len(recorded) != 2:
+        return False
+    if os.name == "nt":
+        return current == recorded
+    return current[1] == recorded[1]
+
+
 def _encode_filesystem_id(value: object) -> int:
     """Map an unsigned filesystem ID bijectively onto SQLite's signed int64."""
     if type(value) is not int or not 0 <= value < _UINT64_MODULUS:
@@ -7134,7 +7148,7 @@ class MarkdownCoordinator:
                 0,
             ),
             {"kind": kind, "path": path, "content_hash": after_hash},
-            current_parent != parent_identity,
+            not _same_parent_directory(current_parent, parent_identity),
         )
 
     def _request_hash_matches(
@@ -8503,7 +8517,7 @@ class MarkdownCoordinator:
     ) -> Iterator[tuple[Path, int | None]]:
         descriptor = _open_parent_directory(target.parent)
         try:
-            if _stat_identity(os.fstat(descriptor)) != expected:
+            if not _same_parent_directory(_stat_identity(os.fstat(descriptor)), expected):
                 raise TargetBoundaryFailure(f"parent identity mismatch for {path}")
             yield target, descriptor
             self._require_parent_identity(target.parent, expected, path)
@@ -8513,7 +8527,7 @@ class MarkdownCoordinator:
     def _require_parent_identity(
         self, parent: Path, expected: object, path: str
     ) -> None:
-        if self._parent_identity(parent) != expected:
+        if not _same_parent_directory(self._parent_identity(parent), expected):
             raise TargetBoundaryFailure(f"parent identity mismatch for {path}")
 
     @contextlib.contextmanager

@@ -26,6 +26,7 @@ from reliable_memory import (
     open_readonly_operational_db,
     publish_runtime_file,
     read_runtime_bytes,
+    same_runtime_file,
     sha256_bytes,
     sync_runtime_directory,
     validate_schema,
@@ -284,18 +285,12 @@ def _require_artifact_record(
 def _validate_artifact_identity(
     record: dict[str, object], actual_identity: object, mutable: bool
 ) -> None:
+    """A mutable artifact is identified by its file, not by its contents."""
     expected_identity = record.get("identity")
     if not isinstance(expected_identity, dict):
         raise ValueError("artifact identity is missing")
-    actual_value = _identity_value(actual_identity)
-    identity_fields = _identity_fields(actual_value, mutable)
-    if any(expected_identity.get(field) != actual_value[field] for field in identity_fields):
+    if not same_runtime_file(expected_identity, actual_identity, contents=not mutable):
         raise ValueError("artifact identity changed")
-
-
-def _identity_fields(actual_value: dict[str, object], mutable: bool) -> tuple[str, ...]:
-    """A mutable artifact is identified by its file, not by its contents."""
-    return ("platform", "volume", "file_id") if mutable else tuple(actual_value)
 
 
 def _validate_immutable_artifact(
@@ -1764,7 +1759,7 @@ def _require_source_identity(
     path: Path, state_root: Path, record: dict[str, object]
 ) -> None:
     identity = capture_runtime_file_identity(path, state_root=state_root)
-    if _identity_value(identity) != record.get("source_identity"):
+    if not same_runtime_file(record.get("source_identity"), identity):
         raise ValueError("migration source identity changed")
 
 

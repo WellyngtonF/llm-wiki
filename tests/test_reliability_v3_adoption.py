@@ -413,6 +413,42 @@ def test_adopted_inspection_validates_every_immutable_artifact_reference(
     assert _inventory(state_root) == before
 
 
+def _rewrite_adopted_identities(state_root: Path, **changes: str) -> None:
+    adoption_path = state_root / "run/reliability-v3-adopted.json"
+    adoption = json.loads(adoption_path.read_bytes())
+    for database in adoption["databases"]:
+        for artifact in ("active", "tombstone"):
+            database[artifact]["identity"].update(changes)
+    _write_runtime_record(adoption_path, adoption)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a Windows volume serial is stable")
+def test_adoption_survives_a_reboot_that_renumbers_the_posix_volume(
+    tmp_path: Path,
+) -> None:
+    """ADR 0009: on 2026-11-14 macOS came back from a reboot with a new st_dev."""
+    root, state_root = _vault(tmp_path)
+    build_adopted_reliability_v3(root, state_root)
+    _rewrite_adopted_identities(state_root, volume="dev:0")
+
+    require_reliability_v3_adopted(root=root, state_root=state_root)
+    report = inspect_installed_vault(root=root, state_root=state_root)
+    assert report["details"]["adoption_state"] != "conflict"
+
+
+def test_adoption_still_rejects_a_tombstone_that_is_another_file(
+    tmp_path: Path,
+) -> None:
+    root, state_root = _vault(tmp_path)
+    build_adopted_reliability_v3(root, state_root)
+    _rewrite_adopted_identities(state_root, file_id="ino:1")
+
+    report = inspect_installed_vault(root=root, state_root=state_root)
+
+    assert report["details"]["adoption_state"] == "conflict"
+    assert report["blockers"] == [{"code": "reliability_v3_record_invalid"}]
+
+
 def test_adopted_inspection_rejects_stale_schema_or_integration_digest(
     tmp_path: Path,
 ) -> None:
