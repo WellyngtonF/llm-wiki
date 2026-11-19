@@ -15,6 +15,7 @@ AGENT_PATTERNS = (
     (re.compile(r"\bopencode\b", re.IGNORECASE), "opencode"),
     (re.compile(r"\bcodex\b", re.IGNORECASE), "codex"),
     (re.compile(r"\bclaude(?:\s+code)?\b", re.IGNORECASE), "claude"),
+    (re.compile(r"\bantigravity\b", re.IGNORECASE), "antigravity"),
 )
 ALLOWED_EVENT_TYPES = frozenset(
     {"session_start", "session_end", "pre_compact", "stop", "user_prompt", "post_tool_use"}

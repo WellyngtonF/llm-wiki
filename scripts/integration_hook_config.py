@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -841,10 +842,6 @@ def _read_cursor_projections(path: Path, candidates: Sequence[bytes]) -> bytes |
     return _cursor_projection_any(_read_config(path)[0], candidates)
 
 
-def _read_antigravity_projections(path: Path, candidates: Sequence[bytes]) -> bytes | None:
-    return _antigravity_projection_any(_read_config(path)[0], candidates)
-
-
 def retired_cursor_hooks_resource(home: Path) -> ManagedResource:
     """Removal-only resource for a Cursor fragment written before Cursor was retired."""
     return _retired_fragment_resource(
@@ -856,12 +853,121 @@ def retired_cursor_hooks_resource(home: Path) -> ManagedResource:
     )
 
 
-def retired_antigravity_hooks_resource(home: Path) -> ManagedResource:
-    """Removal-only resource for an Antigravity fragment written before it was retired."""
-    return _retired_fragment_resource(
-        "antigravity-user-hooks",
-        "antigravity_hooks_fragment",
-        _absolute_destination(home) / ".gemini" / "config" / "hooks.json",
-        _read_antigravity_projections,
-        _write_antigravity_projection,
+ANTIGRAVITY_STANDALONE_ID = "antigravity-user-hooks"
+ANTIGRAVITY_T3_ID_PREFIX = "antigravity-t3-hooks-"
+_T3_PROVIDER_NAME = re.compile(r"^[0-9a-f]{8,128}$")
+_ROOT_PLACEHOLDER = b"__LLM_WIKI_ROOT__"
+_UV_PLACEHOLDER = b"__UV__"
+
+
+def _json_string_bytes(value: Path) -> bytes:
+    return json.dumps(str(value), ensure_ascii=True)[1:-1].encode("ascii")
+
+
+def _materialized_template(root: Path, uv_path: Path, relative: str) -> dict[str, object]:
+    """The template with absolute paths where it names `__LLM_WIKI_ROOT__` and `__UV__`.
+
+    Antigravity runs a hook in its own environment, which carries no `LLM_WIKI_ROOT`,
+    and started from the Dock it has no login-shell PATH to find `uv` on.
+    """
+    raw = _template_raw(root, relative)
+    if _ROOT_PLACEHOLDER not in raw or _UV_PLACEHOLDER not in raw:
+        raise InstallControlError("integration_hook_template_placeholder_missing")
+    raw = raw.replace(_ROOT_PLACEHOLDER, _json_string_bytes(Path(root).resolve()))
+    return _decode_object(raw.replace(_UV_PLACEHOLDER, _json_string_bytes(Path(uv_path))))
+
+
+def antigravity_hooks_template(root: Path, uv_path: Path) -> dict[str, object]:
+    """The `llm-wiki` object Antigravity's `hooks.json` holds, for this vault."""
+    template = _materialized_template(root, uv_path, "integrations/antigravity/hooks.json")
+    owned = template.get("llm-wiki")
+    if set(template) != {"llm-wiki"} or not isinstance(owned, dict):
+        raise InstallControlError("integration_antigravity_template_invalid")
+    return owned
+
+
+def antigravity_gemini_dir(home: Path, resource_id: str) -> Path:
+    """The gemini directory an Antigravity hooks resource id stands for (ADR 0010).
+
+    `antigravity-user-hooks` is `~/.gemini`; `antigravity-t3-hooks-<name>` is the T3
+    Code provider instance `~/.t3/userdata/providers/antigravity/<name>`.
+    """
+    home = _absolute_destination(home)
+    if resource_id == ANTIGRAVITY_STANDALONE_ID:
+        return home / ".gemini"
+    name = resource_id.removeprefix(ANTIGRAVITY_T3_ID_PREFIX)
+    if name == resource_id or not _T3_PROVIDER_NAME.match(name):
+        raise InstallControlError("install_resource_unknown")
+    return home / ".t3" / "userdata" / "providers" / "antigravity" / name
+
+
+def is_antigravity_hooks_id(resource_id: str) -> bool:
+    try:
+        antigravity_gemini_dir(Path("/"), resource_id)
+    except InstallControlError:
+        return False
+    return True
+
+
+def antigravity_hooks_ids(home: Path) -> tuple[str, ...]:
+    """One resource id per Antigravity installation found under `home`."""
+    from antigravity_install import installations
+
+    home = _absolute_destination(home)
+    ids = []
+    for directory in installations(home):
+        if directory == home / ".gemini":
+            ids.append(ANTIGRAVITY_STANDALONE_ID)
+        elif _T3_PROVIDER_NAME.match(directory.name):
+            ids.append(ANTIGRAVITY_T3_ID_PREFIX + directory.name)
+    return tuple(ids)
+
+
+def _antigravity_projection(
+    config: Mapping[str, object], expected: Mapping[str, object]
+) -> bytes | None:
+    return _antigravity_projection_any(config, (canonical_json_bytes(expected),))
+
+
+def _write_antigravity(
+    path: Path,
+    desired: Mapping[str, object],
+    replacement: bytes | None,
+    config_existed: bool,
+) -> None:
+    config, _original = _read_config(path)
+    current = _antigravity_projection(config, desired)
+    if current == replacement:
+        return
+    _write_antigravity_projection(path, current, replacement, {"config_existed": config_existed})
+
+
+def antigravity_hooks_resource(
+    resource_id: str,
+    home: Path,
+    owned_config: Mapping[str, object],
+    *,
+    config_existed: bool | None = None,
+) -> ManagedResource:
+    """Own only the exact top-level `llm-wiki` object of one Antigravity `hooks.json`."""
+    path = antigravity_gemini_dir(home, resource_id) / "config" / "hooks.json"
+    desired_config = dict(owned_config)
+    desired = canonical_json_bytes(desired_config)
+    existed = path.exists() if config_existed is None else config_existed
+    return ManagedResource(
+        resource_id=resource_id,
+        kind="antigravity_hooks_fragment",
+        locator=str(path),
+        desired=desired,
+        read_owned=lambda: _antigravity_projection(_read_config(path)[0], desired_config),
+        write_owned=lambda value: _write_antigravity(path, desired_config, value, existed),
+        recognizes=lambda current: current == desired,
+        read_projections=lambda candidates: _antigravity_projection_any(
+            _read_config(path)[0], candidates
+        ),
+        write_projection=lambda expected, replacement, metadata: _write_antigravity_projection(
+            path, expected, replacement, metadata
+        ),
+        metadata={"config_existed": existed},
+        adopt_as_absent=False,
     )

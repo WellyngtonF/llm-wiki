@@ -5833,6 +5833,7 @@ def _integration_sources(root: Path) -> dict[str, Path]:
         "claude": root / "integrations" / "claude-code" / "settings.json",
         "opencode": root / "scripts" / "llm-wiki-memory-opencode.js",
         "codex": root / "integrations" / "codex" / "hooks.json",
+        "antigravity": root / "integrations" / "antigravity" / "hooks.json",
     }
 
 
@@ -5932,12 +5933,38 @@ def _integration_host_result(
 ) -> dict[str, object]:
     if name == "codex":
         return _codex_host_result(root, home, deadline)
+    if name == "antigravity":
+        return _antigravity_host_result(root, home)
     return _generic_host_result(*_required_host_config(config))
+
+
+def _antigravity_installation_ready(root: Path, gemini: Path) -> bool:
+    from antigravity_install import mcp_state
+
+    hooks = gemini / "config" / "hooks.json"
+    return _contains_markers(hooks, ("antigravity_hook.py",)) and mcp_state(gemini, root) == "current"
+
+
+def _antigravity_host_result(root: Path, home: Path) -> dict[str, object]:
+    """Every Antigravity installation needs both its hooks and its MCP entry (ADR 0010)."""
+    from antigravity_install import installations
+
+    found = installations(home)
+    if not found:
+        return {"status": "skipped", "message": "Optional host not installed."}
+    missing = [str(path) for path in found if not _antigravity_installation_ready(root, path)]
+    if not missing:
+        return {"status": "ok", "message": "User integration config detected."}
+    return {
+        "status": "degraded",
+        "message": f"{len(missing)} Antigravity installation(s) lack LLM-Wiki hooks or MCP.",
+        "installations": missing,
+    }
 
 
 def _integration_hosts(root: Path, home: Path, deadline: float) -> dict[str, dict[str, object]]:
     configs = _integration_host_configs(home)
-    names = ("claude", "opencode", "codex")
+    names = ("claude", "opencode", "codex", "antigravity")
     return {
         name: _integration_host_result(root, home, name, configs.get(name), deadline)
         for name in names

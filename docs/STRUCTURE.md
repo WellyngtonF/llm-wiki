@@ -65,6 +65,7 @@ llm-wiki/                          ← vault root (= $LLM_WIKI_ROOT)
 ├── skills/                        CODE — 9 agent skills (SKILL.md)
 ├── rules/                         CODE — file-handling policies
 ├── integrations/                  CODE — agent integrations
+│   ├── antigravity/hooks.json        lifecycle-hook template (ADR 0010)
 │   ├── claude-code/settings.json     hook and env template
 │   └── codex/hooks.json              official lifecycle-hook template
 ├── benchmark/                     CODE — benchmark suite + report
@@ -186,8 +187,8 @@ Claude and Codex configuration merges may create byte-exact sibling preimages
 outside the vault zones. Claude uses
 `settings.json.bak-llm-wiki-<YYYYMMDD-HHMMSS-ffffff>` beside `settings.json`; Codex
 uses `hooks.json.bak-llm-wiki-<YYYYMMDD-HHMMSS-ffffff>` beside `hooks.json`. The same
-prefix applies to a retired Cursor or Antigravity fragment while `uninstall` takes it
-back. A no-op merge creates no backup.
+prefix applies to an Antigravity `hooks.json` (ADR 0010), and to a retired Cursor
+fragment while `uninstall` takes it back. A no-op merge creates no backup.
 
 Only files with the destination's exact `.bak-llm-wiki-` prefix are owned by this
 retention contract. After changed configuration is published and verified, each
@@ -271,8 +272,10 @@ force-adoption path exists.
 
 The manifest owns recognized LLM-Wiki profile fragments, Windows user root variables,
 native scheduler resources, an explicitly selected cron block, and bounded structural
-fragments in the Claude Code and Codex user configuration files. A fragment written by
-an install before 2026-08-26 in a retired host's file stays removable. It records exact
+fragments in the Claude Code, Codex and Antigravity user configuration files. Antigravity
+has one fragment per installation: `antigravity-user-hooks` for `~/.gemini`, and
+`antigravity-t3-hooks-<instance>` for each T3 Code instance (ADR 0010). A Cursor
+fragment written by an install before 2026-08-26 stays removable. It records exact
 source identity and digests but does not claim that a dirty local checkout is an
 immutable release. Other agent configuration, Git push protection, code upgrade, full
 release inventory, and restored-vault publication remain separate follow-up scopes.
@@ -574,8 +577,8 @@ or nonzero active state remains fail-closed.
   crystallize-playbook, bridge-promote-insight, session-memory-compile,
   session-memory-review).
 - `rules/` — 3 rule files (wiki-files, raw-files, output-files).
-- `integrations/` — thin host wiring: claude-code (settings.json) and codex
-  (hooks.json). MCP is the common read/action interface.
+- `integrations/` — thin host wiring: claude-code (settings.json), codex
+  (hooks.json) and antigravity (hooks.json, ADR 0010). MCP is the common read/action interface.
   `integrations/obsidian/` holds viewer CSS only (the claims-ledger snippet);
   nothing an agent needs depends on Obsidian (ADR 0003).
 - `benchmark/` — retrieval and frozen contradiction corpora/runners, including

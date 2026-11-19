@@ -143,9 +143,41 @@ def _entry_role(entry: Mapping[str, object]) -> str:
     return ""
 
 
+_ANTIGRAVITY_ROLES = {"USER_INPUT": "user", "PLANNER_RESPONSE": "assistant"}
+_ANTIGRAVITY_TOOL_ARGS = ("CommandLine", "Path", "TargetFile", "AbsolutePath", "Url", "Query")
+
+
+def _antigravity_tool_line(call: object) -> str | None:
+    if not isinstance(call, Mapping):
+        return None
+    args = call.get("args")
+    args = args if isinstance(args, Mapping) else {}
+    target = next(
+        (args[name] for name in _ANTIGRAVITY_TOOL_ARGS if isinstance(args.get(name), str)), ""
+    )
+    return _tool_line({"name": call.get("name"), "input": {"command": target}})
+
+
+def _rendered_antigravity_step(entry: Mapping[str, object]) -> list[str]:
+    """Antigravity's `transcript_full.jsonl`: one step per line, tool output dropped.
+
+    A `USER_INPUT` step is the user's turn, a `PLANNER_RESPONSE` is the model's text
+    and the tool calls it made; every other step type is what a tool returned.
+    """
+    role = _ANTIGRAVITY_ROLES.get(str(entry.get("type")))
+    if role is None:
+        return []
+    lines = [_rendered_text({"text": entry.get("content")}, role)]
+    calls = entry.get("tool_calls")
+    lines.extend(map(_antigravity_tool_line, calls if isinstance(calls, list) else []))
+    return [line for line in lines if line]
+
+
 def _rendered_entry(entry: Mapping[str, object]) -> list[str]:
     if entry.get("type") == "response_item":
         return _rendered_codex_message(entry.get("payload"))
+    if "step_index" in entry:
+        return _rendered_antigravity_step(entry)
     role = _entry_role(entry)
     if not role:
         return []

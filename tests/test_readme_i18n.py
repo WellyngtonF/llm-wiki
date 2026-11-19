@@ -217,17 +217,20 @@ def test_readmes_mark_precommit_as_opt_in() -> None:
 def test_readmes_describe_the_retired_hosts_and_viewer_integration() -> None:
     markers = {
         "README.md": (
-            "Cursor and Antigravity were retired on 2026-08-26",
+            "Cursor was retired on 2026-08-26",
+            "| **Antigravity** |",
             "`uninstall` still takes back hooks an earlier install wrote",
             "Viewer only",
         ),
         "README.ru.md": (
-            "Cursor и Antigravity сняты с поддержки 2026-08-26",
+            "Cursor снят с поддержки 2026-08-26",
+            "| **Antigravity** |",
             "`uninstall` по-прежнему забирает хуки",
             "Только viewer",
         ),
         "README.zh-CN.md": (
-            "Cursor 与 Antigravity 已于 2026-08-26 退出支持",
+            "Cursor 已于 2026-08-26 退出支持",
+            "| **Antigravity** |",
             "`uninstall` 仍会收回旧版安装写入的钩子",
             "仅 viewer",
         ),
@@ -242,8 +245,8 @@ def test_installers_report_agent_activation_and_scheduler_limits_truthfully() ->
     powershell = (ROOT / "install.ps1").read_text(encoding="utf-8")
     guide = (ROOT / "docs/USER-GUIDE.md").read_text(encoding="utf-8")
 
-    required = ("OpenCode: active automatic", "Agent integrations:")
-    unnamed_agents = ("cursor", "antigravity")
+    required = ("OpenCode: active automatic", "Agent integrations:", "Antigravity: active")
+    unnamed_agents = ("cursor",)
 
     assert (
         _missing(shell, required),

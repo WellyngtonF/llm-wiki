@@ -262,6 +262,7 @@ def _build_root(tmp_path: Path) -> tuple[Path, Path, Path]:
         root / "scripts",
         root / "integrations" / "claude-code",
         root / "integrations" / "codex",
+        root / "integrations" / "antigravity",
         state_root / "run",
         state_root / "logs",
         state_root / "cache",
@@ -275,6 +276,7 @@ def _build_root(tmp_path: Path) -> tuple[Path, Path, Path]:
         "scripts/llm-wiki-memory-opencode.js",
         "scripts/codex_memory.py",
         "integrations/claude-code/settings.json",
+        "integrations/antigravity/hooks.json",
     ):
         (root / relative).write_text("{}\n", encoding="utf-8")
     (root / "integrations" / "codex" / "hooks.json").write_text(

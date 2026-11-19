@@ -9,6 +9,9 @@ for the window captures it.
 
 The bookkeeping is one bounded map in `run/state.json`. See
 `docs/research/2026-09-17-a-codex-turn-is-not-a-session.md`.
+
+Antigravity fires `Stop` once per turn too, and keeps its own map under
+`ANTIGRAVITY_STATE_KEY` through the `key` argument (ADR 0010).
 """
 from __future__ import annotations
 
@@ -18,9 +21,12 @@ from datetime import datetime
 from typing import Any
 
 STATE_KEY = "codex_turn_end_captures"
+ANTIGRAVITY_STATE_KEY = "antigravity_turn_end_captures"
 # The host's own figure: Codex ends a session that has been idle for 30 minutes.
 CAPTURE_WINDOW_SECONDS = 30 * 60
 MAX_SESSIONS = 64
+# A hook must not wait on a contended state file; without the lock the turn is captured.
+TURN_END_LOCK_SECONDS = 0.5
 TAIL_FIELDS = ("cwd", "transcript_path", "turn_id")
 
 
@@ -34,11 +40,11 @@ def _age_seconds(stamp: object, now: datetime) -> float:
         return math.inf
 
 
-def _sessions(state: dict[str, Any]) -> dict[str, Any]:
-    sessions = state.get(STATE_KEY)
+def _sessions(state: dict[str, Any], key: str = STATE_KEY) -> dict[str, Any]:
+    sessions = state.get(key)
     if not isinstance(sessions, dict):
         sessions = {}
-        state[STATE_KEY] = sessions
+        state[key] = sessions
     return sessions
 
 
@@ -53,18 +59,20 @@ def _last_touch(entry: object) -> str:
     return max(str(known.get("captured_at") or ""), str(tail_at or ""))
 
 
-def _trim(state: dict[str, Any]) -> None:
-    sessions = _sessions(state)
+def _trim(state: dict[str, Any], key: str = STATE_KEY) -> None:
+    sessions = _sessions(state, key)
     if len(sessions) <= MAX_SESSIONS:
         return
     newest = sorted(sessions, key=lambda name: _last_touch(sessions[name]), reverse=True)
-    state[STATE_KEY] = {name: sessions[name] for name in newest[:MAX_SESSIONS]}
+    state[key] = {name: sessions[name] for name in newest[:MAX_SESSIONS]}
 
 
-def mark_captured(state: dict[str, Any], session_id: str, now: datetime) -> None:
+def mark_captured(
+    state: dict[str, Any], session_id: str, now: datetime, *, key: str = STATE_KEY
+) -> None:
     """This session was captured whole just now; it has no tail."""
-    _sessions(state)[session_id] = {"captured_at": now.isoformat()}
-    _trim(state)
+    _sessions(state, key)[session_id] = {"captured_at": now.isoformat()}
+    _trim(state, key)
 
 
 def _tail(raw: Mapping[str, Any], now: datetime) -> dict[str, Any]:
@@ -73,15 +81,18 @@ def _tail(raw: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     return tail
 
 
-def claim_turn_end(state: dict[str, Any], raw: Mapping[str, Any], now: datetime) -> bool:
+def claim_turn_end(
+    state: dict[str, Any], raw: Mapping[str, Any], now: datetime, *, key: str = STATE_KEY
+) -> bool:
     """True when this turn end is a capture; otherwise the turn becomes the tail."""
     session_id = str(raw["session_id"])
-    captured_at = _mapping(_sessions(state).get(session_id)).get("captured_at")
+    sessions = _sessions(state, key)
+    captured_at = _mapping(sessions.get(session_id)).get("captured_at")
     if _age_seconds(captured_at, now) >= CAPTURE_WINDOW_SECONDS:
-        mark_captured(state, session_id, now)
+        mark_captured(state, session_id, now, key=key)
         return True
-    _sessions(state)[session_id] = {"captured_at": captured_at, "pending": _tail(raw, now)}
-    _trim(state)
+    sessions[session_id] = {"captured_at": captured_at, "pending": _tail(raw, now)}
+    _trim(state, key)
     return False
 
 
@@ -95,33 +106,35 @@ def _quiet_tail(entry: object, now: datetime) -> Mapping[str, Any] | None:
 
 
 def claim_quiet_tail(
-    state: dict[str, Any], now: datetime, *, except_session: str
+    state: dict[str, Any], now: datetime, *, except_session: str, key: str = STATE_KEY
 ) -> dict[str, Any] | None:
     """One session whose tail has been quiet for the window, claimed as captured.
 
     `before` is the entry as it stood, for `restore` when the capture fails.
     """
-    sessions = _sessions(state)
+    sessions = _sessions(state, key)
     for session_id in sorted(sessions):
         before = sessions[session_id]
         tail = _quiet_tail(before, now)
         if tail is not None and session_id != except_session:
-            mark_captured(state, session_id, now)
+            mark_captured(state, session_id, now, key=key)
             return {**tail, "session_id": session_id, "before": before}
     return None
 
 
-def restore(state: dict[str, Any], session_id: str, entry: object) -> None:
+def restore(
+    state: dict[str, Any], session_id: str, entry: object, *, key: str = STATE_KEY
+) -> None:
     """Put a claim back after the capture it stood for failed."""
     if entry is None:
-        _sessions(state).pop(session_id, None)
+        _sessions(state, key).pop(session_id, None)
         return
-    _sessions(state)[session_id] = entry
+    _sessions(state, key)[session_id] = entry
 
 
-def snapshot(state: Mapping[str, Any], session_id: str) -> object:
+def snapshot(state: Mapping[str, Any], session_id: str, *, key: str = STATE_KEY) -> object:
     """The entry as it stands, to hand to `restore` later."""
-    sessions = state.get(STATE_KEY)
+    sessions = state.get(key)
     if not isinstance(sessions, Mapping):
         return None
     return sessions.get(session_id)

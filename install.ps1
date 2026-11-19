@@ -14,7 +14,7 @@
 #   3. Runs a bounded production smoke
 #   4. Sets LLM_WIKI_ROOT environment variable (user-level)
 #   5. Registers Windows Task Scheduler (nightly + weekly)
-#   6. Detects agents (Claude Code, OpenCode, Codex)
+#   6. Detects agents (Claude Code, OpenCode, Codex, Antigravity)
 #   7. Wires up each detected agent (hooks through the install transaction, MCP entries)
 #   8. Synchronizes runtime state and derived indexes
 #   9. Adopts the Reliability V3 queue so session capture works
@@ -437,6 +437,18 @@ $codexDetected = [bool]((Get-Command codex -ErrorAction SilentlyContinue) -or (T
 # Same reason, and the same test install.sh makes: without this flag the plugin was
 # written only by the OpenCode configuration step, and no uninstall removed it.
 $openCodeDetected = [bool]((Get-Command opencode -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $env:USERPROFILE ".config\opencode")))
+# Antigravity (ADR 0010): the standalone ~/.gemini and every T3 Code instance.
+$antigravityCount = 0
+try {
+    $antigravityJson = Invoke-NativeCommand uv @(
+        "run", "--locked", "--no-sync", "--directory", $VAULT_ROOT,
+        "python", (Join-Path $VAULT_ROOT "scripts\antigravity_install.py"),
+        "detect", "--home", $env:USERPROFILE
+    ) -CaptureOutput
+    $antigravityCount = @(($antigravityJson | ConvertFrom-Json).installations).Count
+} catch {
+    $antigravityCount = 0
+}
 $codexHooksState = "none"
 if ($codexDetected) {
     New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE ".codex") | Out-Null
@@ -455,6 +467,7 @@ try {
     if ($openCodeDetected) { $installControlArgs += "--opencode-plugin" }
     if ($claudeDetected) { $installControlArgs += "--claude-settings" }
     if ($codexHooksState -eq "absent") { $installControlArgs += "--codex-hooks" }
+    if ($antigravityCount -gt 0) { $installControlArgs += "--antigravity-hooks" }
     $installControlJson = Invoke-NativeCommand uv $installControlArgs -CaptureOutput
     $installControl = $installControlJson | ConvertFrom-Json
     if ($installControl.status -ne "committed" -or
@@ -562,6 +575,29 @@ if (Get-Command codex -ErrorAction SilentlyContinue) {
     }
 }
 
+# Antigravity - hooks are owned by the install transaction (step 6); the MCP
+# entry is added here when missing and never replaces someone else's.
+if ($antigravityCount -gt 0) {
+    $antigravityStatus = "unknown"
+    try {
+        $antigravityResult = Invoke-NativeCommand uv @(
+            "run", "--locked", "--no-sync", "--directory", $VAULT_ROOT,
+            "python", (Join-Path $VAULT_ROOT "scripts\antigravity_install.py"),
+            "mcp", "--home", $env:USERPROFILE, "--root", $VAULT_ROOT, "--uv-path", $uvPath
+        ) -CaptureOutput
+        $antigravityStatus = ($antigravityResult | ConvertFrom-Json).status
+    } catch {
+        $antigravityStatus = "unknown"
+    }
+    if ($antigravityStatus -eq "active" -and -not $schedulerWarning) {
+        Ok "Antigravity hooks and MCP configured for $antigravityCount installation(s)"
+        $agents += "Antigravity: active"
+    } else {
+        Warn "Antigravity was not configured in every installation (status: $antigravityStatus); run doctor for the list."
+        $agents += "Antigravity: conflict or unverified"
+    }
+}
+
 # Claude Code - hooks and env are owned by the install transaction (step 6)
 $claudeConfig = Join-Path $env:USERPROFILE ".claude"
 $claudeUserConfig = Join-Path $env:USERPROFILE ".claude.json"
@@ -611,7 +647,7 @@ if ($claudeDetected) {
 }
 
 if ($agents.Count -eq 0) {
-    Warn "No agents detected. Install Claude Code, OpenCode, or Codex."
+    Warn "No agents detected. Install Claude Code, OpenCode, Codex, or Antigravity."
 } else {
     Ok "Agent integrations:"
     $agents | ForEach-Object { Info "  - $_" }

@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -4556,7 +4556,22 @@ def _agent_registrations(home: Path) -> list[tuple[str, Path, str, str]]:
             ("opencode", opencode / name, '"llm-wiki"', 'delete "llm-wiki" under "mcp"')
             for name in GLOBAL_CONFIG_NAMES
         ),
+        *(
+            (
+                "antigravity",
+                gemini / "config" / "mcp_config.json",
+                '"llm-wiki"',
+                'delete "llm-wiki" under "mcpServers"',
+            )
+            for gemini in _antigravity_gemini_dirs(home)
+        ),
     ]
+
+
+def _antigravity_gemini_dirs(home: Path) -> list[Path]:
+    from host_transcripts import t3_antigravity_dirs
+
+    return [home / ".gemini", *t3_antigravity_dirs(home)]
 
 
 def _file_mentions(path: Path, marker: str) -> bool:
@@ -4760,10 +4775,11 @@ def _ide_hook_factories(
 ) -> dict[str, Callable[[], ManagedResource]]:
     """One factory per owned host resource, built only when it is selected.
 
-    The first two entries are removal-only. Cursor and Antigravity were retired on
-    2026-08-26 and nothing selects them at install time any more, but a manifest
-    written before that names them, and `_active_resource` fails closed on an id the
-    code cannot supply — so uninstall and rollback still need to build them.
+    The first entry is removal-only. Cursor was retired on 2026-08-26 and nothing
+    selects it at install time any more, but a manifest written before that names
+    it, and `_active_resource` fails closed on an id the code cannot supply — so
+    uninstall and rollback still need to build it. Antigravity's resources are
+    built by `_antigravity_hook_resources`: their ids name the installation.
     """
     from integration_hook_config import (
         claude_settings_resource,
@@ -4771,13 +4787,11 @@ def _ide_hook_factories(
         codex_hooks_resource,
         codex_hooks_template,
         opencode_plugin_resource,
-        retired_antigravity_hooks_resource,
         retired_cursor_hooks_resource,
     )
 
     return {
         "cursor-user-hooks": lambda: retired_cursor_hooks_resource(home),
-        "antigravity-user-hooks": lambda: retired_antigravity_hooks_resource(home),
         "opencode-plugin": lambda: opencode_plugin_resource(
             root, _opencode_plugin_destination(home)
         ),
@@ -4796,26 +4810,53 @@ def _ide_hook_factories(
     }
 
 
+def _antigravity_hook_resources(
+    root: Path,
+    home: Path,
+    uv_path: Path,
+    resource_ids: Sequence[str],
+    metadata: Mapping[str, Mapping[str, object]],
+) -> list[ManagedResource]:
+    """One `hooks.json` fragment per Antigravity installation (ADR 0010)."""
+    if not resource_ids:
+        return []
+    from integration_hook_config import antigravity_hooks_resource, antigravity_hooks_template
+
+    template = antigravity_hooks_template(root, uv_path)
+    return [
+        antigravity_hooks_resource(
+            resource_id,
+            home,
+            template,
+            config_existed=_recorded_config_existed(metadata, resource_id),
+        )
+        for resource_id in resource_ids
+    ]
+
+
 def _selected_ide_hook_resources(
     root: Path,
     home: Path,
     retired_cursor_hooks: bool,
-    retired_antigravity_hooks: bool,
+    antigravity_hooks: Sequence[str] = (),
     opencode_plugin: bool = False,
     claude_settings: bool = False,
     codex_hooks: bool = False,
     state_root: Path | None = None,
     metadata: Mapping[str, Mapping[str, object]] | None = None,
+    uv_path: Path = Path("uv"),
 ) -> list[ManagedResource]:
     wanted = {
         "cursor-user-hooks": retired_cursor_hooks,
-        "antigravity-user-hooks": retired_antigravity_hooks,
         "opencode-plugin": opencode_plugin,
         "claude-user-settings": claude_settings,
         "codex-user-hooks": codex_hooks,
     }
     factories = _ide_hook_factories(root, home, state_root, metadata or {})
-    return [factories[key]() for key, selected in wanted.items() if selected]
+    return [
+        *(factories[key]() for key, selected in wanted.items() if selected),
+        *_antigravity_hook_resources(root, home, uv_path, antigravity_hooks, metadata or {}),
+    ]
 
 
 def _posix_install_resources(
@@ -4902,7 +4943,7 @@ def build_install_resources(
     profile: Path | None,
     powershell_path: str | None,
     retired_cursor_hooks: bool = False,
-    retired_antigravity_hooks: bool = False,
+    antigravity_hooks: Sequence[str] = (),
     opencode_plugin: bool = False,
     claude_settings: bool = False,
     codex_hooks: bool = False,
@@ -4924,12 +4965,13 @@ def build_install_resources(
             root,
             home,
             retired_cursor_hooks,
-            retired_antigravity_hooks,
+            antigravity_hooks,
             opencode_plugin,
             claude_settings,
             codex_hooks,
             state_root,
             metadata,
+            uv_path,
         ),
         *([obsidian_snippet_resource(root)] if obsidian_snippet else []),
     ]
@@ -4941,6 +4983,20 @@ def _selected_backend(requested: str) -> str:
     if sys.platform == "linux":
         available = _systemd_user_available(systemctl)
     return select_scheduler_backend(sys.platform, requested, available)
+
+
+def _antigravity_ids(identifiers: Iterable[str]) -> tuple[str, ...]:
+    from integration_hook_config import is_antigravity_hooks_id
+
+    return tuple(sorted(name for name in identifiers if is_antigravity_hooks_id(name)))
+
+
+def _requested_antigravity_ids(args: argparse.Namespace) -> tuple[str, ...]:
+    if not getattr(args, "antigravity_hooks", False):
+        return ()
+    from integration_hook_config import antigravity_hooks_ids
+
+    return antigravity_hooks_ids(args.home.resolve())
 
 
 def _requested_resources(args: argparse.Namespace, backend: str) -> list[ManagedResource]:
@@ -4955,6 +5011,7 @@ def _requested_resources(args: argparse.Namespace, backend: str) -> list[Managed
         opencode_plugin=args.opencode_plugin,
         claude_settings=args.claude_settings,
         codex_hooks=args.codex_hooks,
+        antigravity_hooks=_requested_antigravity_ids(args),
         obsidian_snippet=_obsidian_config_exists(args.root.resolve()),
         ownership_metadata=None,
     )
@@ -5097,7 +5154,7 @@ def _resources_from_record(
         profile=_recorded_profile(record, args.profile),
         powershell_path=args.powershell_path,
         retired_cursor_hooks="cursor-user-hooks" in identifiers,
-        retired_antigravity_hooks="antigravity-user-hooks" in identifiers,
+        antigravity_hooks=_antigravity_ids(identifiers),
         opencode_plugin="opencode-plugin" in identifiers,
         claude_settings="claude-user-settings" in identifiers,
         codex_hooks="codex-user-hooks" in identifiers,
@@ -5160,6 +5217,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--opencode-plugin", action="store_true")
     install.add_argument("--claude-settings", action="store_true")
     install.add_argument("--codex-hooks", action="store_true")
+    install.add_argument("--antigravity-hooks", action="store_true")
     _add_existing_arguments(subparsers.add_parser("rollback"))
     _add_existing_arguments(subparsers.add_parser("uninstall"))
     return parser

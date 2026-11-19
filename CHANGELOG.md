@@ -8,6 +8,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Antigravity is a supported host again** (ADR 0010), built from what a running
+  Antigravity fires. `scripts/antigravity_hook.py` handles `SessionStart` (the
+  bounded context is injected as a system message), `PostToolUse` (commands and
+  file writes leave a breadcrumb) and `Stop` (a turn end captures the conversation
+  under the Codex turn-end rule, since Antigravity has no session-end event). The
+  installers find `~/.gemini` and every T3 Code Antigravity instance, own the
+  `llm-wiki` object of each `config/hooks.json` (`--antigravity-hooks`), and add
+  the MCP entry to each `config/mcp_config.json` (`scripts/antigravity_install.py`).
+  Session evidence renders the Antigravity transcript, doctor checks every
+  installation, and `flush_memory.py --agent antigravity` is accepted again.
+  Cursor stays retired.
+
 - **The owner can acknowledge a refused attempt** (ADR 0007). `doctor.py
   --acknowledge-refused <id>... --reason <text>` (or `open`) records an attempt
   doctor cannot prove resolved in `run/acknowledged-refusals.json`; doctor then

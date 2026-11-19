@@ -160,7 +160,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-reason", default="")
     p.add_argument(
         "--agent",
-        choices=("opencode", "codex", "claude", "unknown"),
+        choices=("opencode", "codex", "claude", "antigravity", "unknown"),
         default="unknown",
     )
     p.add_argument("--ephemeral-transcript", action="store_true")

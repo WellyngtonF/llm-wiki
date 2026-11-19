@@ -512,7 +512,16 @@ if command -v codex &>/dev/null || [ -d "$HOME/.codex" ]; then
     CODEX_HOOKS_OWNED=1
   fi
 fi
+# Antigravity (ADR 0010): the standalone ~/.gemini and every T3 Code instance.
+# The transaction owns each installation's `llm-wiki` hooks object.
+ANTIGRAVITY_COUNT="$(uv run --locked --no-sync --directory "$VAULT_ROOT" python \
+  "$VAULT_ROOT/scripts/antigravity_install.py" detect --home "$HOME" 2>/dev/null \
+  | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["installations"]))' 2>/dev/null \
+  || echo 0)"
 IDE_HOOK_ARGS=()
+if [ "$ANTIGRAVITY_COUNT" -gt 0 ]; then
+  IDE_HOOK_ARGS+=(--antigravity-hooks)
+fi
 if [ "$OPENCODE_PLUGIN" -eq 1 ]; then
   IDE_HOOK_ARGS+=(--opencode-plugin)
 fi
@@ -622,6 +631,25 @@ if command -v codex &>/dev/null; then
   fi
 fi
 
+# Antigravity — hooks are owned by the install transaction (step 6); the MCP
+# entry is added here when missing and never replaces someone else's.
+if [ "$ANTIGRAVITY_COUNT" -gt 0 ]; then
+  ANTIGRAVITY_RESULT="$(uv run --locked --no-sync --directory "$VAULT_ROOT" python \
+    "$VAULT_ROOT/scripts/antigravity_install.py" mcp \
+    --home "$HOME" --root "$VAULT_ROOT" --uv-path "$UV_PATH" 2>/dev/null || echo '{}')"
+  ANTIGRAVITY_STATUS="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("status", "unknown"))' "$ANTIGRAVITY_RESULT" 2>/dev/null || echo unknown)"
+  case "$ANTIGRAVITY_STATUS" in
+    active)
+      ok "Antigravity hooks and MCP configured for $ANTIGRAVITY_COUNT installation(s)"
+      AGENT_STATUSES+=("Antigravity: active")
+      ;;
+    *)
+      warn "Antigravity MCP config was not changed in every installation (status: $ANTIGRAVITY_STATUS); run doctor for the list."
+      AGENT_STATUSES+=("Antigravity: conflict or unverified")
+      ;;
+  esac
+fi
+
 # Claude Code — hooks and env are owned by the install transaction (step 6)
 if [ "$CLAUDE_SETTINGS" -eq 1 ]; then
   ok "Claude settings owned by the install transaction → ~/.claude/settings.json"
@@ -656,7 +684,7 @@ if [ "$CLAUDE_SETTINGS" -eq 1 ]; then
 fi
 
 if [ "${#AGENT_STATUSES[@]}" -eq 0 ]; then
-  warn "No supported agents detected. Install Claude Code, OpenCode, or Codex CLI."
+  warn "No supported agents detected. Install Claude Code, OpenCode, Codex CLI, or Antigravity."
 else
   ok "Agent integrations:"
   printf '  - %s\n' "${AGENT_STATUSES[@]}"
