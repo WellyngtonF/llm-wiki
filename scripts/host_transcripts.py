@@ -5,6 +5,10 @@ Code, `CODEX_HOME` for Codex — and a hook inherits the host's environment, so 
 variable names the directory this very host writes to. The defaults stay on the
 list because the scheduler's environment is not the host's. See
 `docs/research/2026-09-17-a-moved-host-directory-is-still-the-host.md`.
+
+Antigravity keeps a conversation under `<gemini dir>/<product>/brain/<id>/`, and
+its gemini directory is `~/.gemini`, the one `GEMINI_HOME` names, or one per T3
+Code provider instance under `~/.t3/userdata/providers/antigravity/` (ADR 0010).
 """
 from __future__ import annotations
 
@@ -17,11 +21,29 @@ _HOSTS = (
     ("CLAUDE_CONFIG_DIR", ".claude", "projects"),
     ("CODEX_HOME", ".codex", "sessions"),
 )
+ANTIGRAVITY_PRODUCTS = ("antigravity", "antigravity-cli", "antigravity-ide", "antigravity-acp")
+T3_ANTIGRAVITY_PROVIDERS = Path(".t3") / "userdata" / "providers" / "antigravity"
 
 
 def _configured(environ: Mapping[str, str], variable: str) -> list[Path]:
     value = environ.get(variable, "").strip()
     return [Path(value).expanduser()] if value else []
+
+
+def t3_antigravity_dirs(home: Path) -> list[Path]:
+    """Each T3 Code Antigravity provider instance's gemini directory, sorted."""
+    providers = home / T3_ANTIGRAVITY_PROVIDERS
+    try:
+        found = [entry for entry in providers.iterdir() if entry.is_dir()]
+    except OSError:
+        return []
+    return sorted(entry for entry in found if not entry.is_symlink())
+
+
+def antigravity_gemini_dirs(environ: Mapping[str, str], home: Path) -> list[Path]:
+    """`~/.gemini`, the one `GEMINI_HOME` names, then T3 Code's, without repeats."""
+    dirs = [home / ".gemini", *_configured(environ, "GEMINI_HOME"), *t3_antigravity_dirs(home)]
+    return list(dict.fromkeys(dirs))
 
 
 def host_transcript_roots(
@@ -34,4 +56,6 @@ def host_transcript_roots(
     for variable, directory, inner in _HOSTS:
         bases = [home / directory, *_configured(environ, variable)]
         roots.extend(base / inner for base in bases)
+    for gemini in antigravity_gemini_dirs(environ, home):
+        roots.extend(gemini / product / "brain" for product in ANTIGRAVITY_PRODUCTS)
     return tuple(dict.fromkeys(roots))

@@ -6,15 +6,21 @@ they do not implement a second memory API.
 
 ## Supported agents
 
-Claude Code, OpenCode, and Codex CLI are the supported hosts. Each uses a thin
-lifecycle adapter installed and owned by the install control plane, and each reads
-and acts through the same MCP server.
+Claude Code, OpenCode, Codex CLI, and Antigravity are the supported hosts. Each uses
+a thin lifecycle adapter installed and owned by the install control plane, and each
+reads and acts through the same MCP server.
 
-Cursor and Antigravity were retired on 2026-08-26. The installer no longer detects
-them, writes their hook configuration, or reports on them. `uninstall` and `rollback`
-still take back a fragment written by an older install, so an existing user is not
-left with a hook pointing at a vault nothing maintains. See
-`knowledge/notes/retire-cursor-and-antigravity-decision.md`.
+Antigravity came back on 2026-11-18 (`docs/adr/0010-antigravity-is-a-supported-host-again.md`).
+`antigravity/hooks.json` is the template; the installer writes it, with the absolute
+`uv` and the vault root, into `config/hooks.json` of `~/.gemini` and of every T3 Code
+Antigravity instance, and `scripts/antigravity_install.py` adds the MCP entry to
+`config/mcp_config.json` beside it. `scripts/antigravity_hook.py` is the one entry point
+for its `SessionStart`, `PostToolUse` and `Stop` events.
+
+Cursor was retired on 2026-08-26. The installer no longer detects it, writes its hook
+configuration, or reports on it. `uninstall` and `rollback` still take back a fragment
+written by an older install, so an existing user is not left with a hook pointing at
+a vault nothing maintains.
 
 The OpenCode plugin is installed from outside this repository (it lives with
 OpenCode on the owner's other machine); this directory holds no copy of it. The
@@ -31,10 +37,10 @@ The vault is **shared infrastructure**. All agents write to the same
 `knowledge/daily/` and read from the same `knowledge/notes/`. A decision recorded by
 Claude Code is visible to OpenCode in its next session.
 
-| Feature | Every supported agent (Claude Code / OpenCode / Codex) |
+| Feature | Every supported agent (Claude Code / OpenCode / Codex / Antigravity) |
 |---|---|
 | **Reads/actions** | 13 task-shaped MCP tools |
-| **Auto-capture** | Thin hooks/plugins forward lifecycle events; prompts and edits leave a breadcrumb in the daily log (Claude `UserPromptSubmit`/`PostToolUse`, Codex `UserPromptSubmit`/`PostToolUse` on `apply_patch`\|`Bash`, OpenCode `tool.execute.after`) |
+| **Auto-capture** | Thin hooks/plugins forward lifecycle events; prompts and edits leave a breadcrumb in the daily log (Claude `UserPromptSubmit`/`PostToolUse`, Codex `UserPromptSubmit`/`PostToolUse` on `apply_patch`\|`Bash`, OpenCode `tool.execute.after`, Antigravity `PostToolUse` on commands and file writes) |
 | **Session classification** | FLUSH MAJOR/MINOR/OK at idle |
 | **Nightly compile** | Native scheduler (Task Scheduler, LaunchAgent, or user systemd); cron is explicit fallback |
 | **Context injection** | SessionStart hook injects bounded context |

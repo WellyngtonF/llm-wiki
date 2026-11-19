@@ -66,9 +66,32 @@ def test_the_defaults_stay_and_the_configured_directories_are_added(tmp_path):
     home = tmp_path / "home"
     environ = {"CLAUDE_CONFIG_DIR": str(tmp_path / "c"), "CODEX_HOME": str(tmp_path / "x")}
 
-    assert host_transcript_roots(environ, home) == (
+    roots = host_transcript_roots(environ, home)
+
+    assert roots[:4] == (
         home / ".claude" / "projects",
         tmp_path / "c" / "projects",
         home / ".codex" / "sessions",
         tmp_path / "x" / "sessions",
+    )
+    assert roots[4:] == tuple(
+        home / ".gemini" / product / "brain"
+        for product in ("antigravity", "antigravity-cli", "antigravity-ide", "antigravity-acp")
+    )
+
+
+def test_antigravity_brains_include_gemini_home_and_each_t3_instance(tmp_path):
+    from host_transcripts import host_transcript_roots
+
+    home = tmp_path / "home"
+    instance = home / ".t3" / "userdata" / "providers" / "antigravity" / "ab12cd34"
+    instance.mkdir(parents=True)
+    environ = {"GEMINI_HOME": str(tmp_path / "g")}
+
+    roots = host_transcript_roots(environ, home)
+
+    assert tmp_path / "g" / "antigravity" / "brain" in roots
+    assert instance / "antigravity-acp" / "brain" in roots
+    assert roots.index(tmp_path / "g" / "antigravity" / "brain") < roots.index(
+        instance / "antigravity-acp" / "brain"
     )

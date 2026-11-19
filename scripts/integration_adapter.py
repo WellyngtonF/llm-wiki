@@ -106,7 +106,7 @@ class CheckpointStartPassed(Exception):
 
 MAX_CAPTURE_EVIDENCE_BYTES = 900 * 1024
 CAPTURE_HANDLER_VERSION = 1
-SOURCES = frozenset({"claude", "opencode", "codex"})
+SOURCES = frozenset({"claude", "opencode", "codex", "antigravity"})
 EVENTS = frozenset(
     {"session_start", "session_end", "pre_compact", "stop", "user_prompt", "post_tool_use"}
 )

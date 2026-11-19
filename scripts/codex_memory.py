@@ -37,11 +37,10 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from codex_turn_end import TURN_END_LOCK_SECONDS  # noqa: E402
 from memory_state import ROOT, STATE_ROOT, update_state, windows_background_options  # noqa: E402
 
 SCRIPTS_DIR = ROOT / "scripts"
-# A hook must not wait on a contended state file; without the lock the turn is captured.
-TURN_END_LOCK_SECONDS = 0.5
 PROJECTS_DIR = ROOT / "knowledge" / "projects"
 SCRIPT_TIMEOUT_SECONDS = 10
 MAX_HOOK_INPUT_BYTES = 64 * 1024

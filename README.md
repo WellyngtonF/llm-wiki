@@ -7,7 +7,7 @@
 
 **A local-first memory system for AI agents. Markdown files, git-tracked, and owned by you.**
 
-LLM Wiki gives every AI coding agent you use — Claude Code, OpenCode, Codex — one MCP-first interface to a shared, persistent knowledge base. MCP handles reads and actions; thin native lifecycle adapters capture session events that MCP cannot observe. Durable knowledge survives across sessions so you never re-explain the same thing twice.
+LLM Wiki gives every AI coding agent you use — Claude Code, OpenCode, Codex, Antigravity — one MCP-first interface to a shared, persistent knowledge base. MCP handles reads and actions; thin native lifecycle adapters capture session events that MCP cannot observe. Durable knowledge survives across sessions so you never re-explain the same thing twice.
 
 Everything lives on your disk as plain markdown: readable in Obsidian, diffable in git, owned entirely by you.
 
@@ -57,7 +57,7 @@ The system follows the "compile, not retrieve" pattern ([Karpathy, April 2026](h
 ## Features
 
 ### Capture pipeline
-- **Thin lifecycle adapters**: Claude Code and Codex hooks plus the OpenCode plugin normalize events through `integration_adapter.py`
+- **Thin lifecycle adapters**: Claude Code, Codex and Antigravity hooks plus the OpenCode plugin normalize events through `integration_adapter.py`
 - **3-tier session classification**: FLUSH_MAJOR (decisions/lessons → triggers compile), FLUSH_MINOR (gotchas → save only), FLUSH_OK (chatter → skip)
 - **Non-LLM breadcrumbs** — prompt + tool-usage tagging at ms-latency, no API calls
 - **Secret redaction** — API keys, tokens, long base64 stripped before any write
@@ -122,7 +122,7 @@ The system follows the "compile, not retrieve" pattern ([Karpathy, April 2026](h
 - Python 3.10+
 - git
 - [uv](https://docs.astral.sh/uv/) 0.12.3 exactly — both installers refuse any other version
-- An AI agent you already use (Claude Code, OpenCode, or Codex)
+- An AI agent you already use (Claude Code, OpenCode, Codex, or Antigravity)
 
 ### Source install
 
@@ -251,9 +251,10 @@ LLM Wiki detects installed agents during install and reports whether integration
 | **OpenCode** | Automatic when configuration verifies | MCP + thin JS lifecycle plugin | MCP provides reads/actions; the plugin forwards lifecycle events to `integration_adapter.py` |
 | **Codex CLI** | Automatic when configuration verifies; review hook trust in `/hooks` | MCP + official lifecycle hooks | MCP provides reads/actions; hooks forward lifecycle events |
 | **Claude Code** | Automatic when settings merge verifies | MCP + thin settings.json hooks | MCP provides reads/actions; five hooks forward lifecycle events |
+| **Antigravity** | Automatic when configuration verifies (standalone and T3 Code) | MCP + lifecycle hooks | MCP provides reads/actions; three hooks forward lifecycle events (ADR 0010) |
 | **Obsidian** | Viewer only | Optional Markdown viewer | Open the vault directly; no Obsidian UI or ingestion feature is required |
 
-Cursor and Antigravity were retired on 2026-08-26; the installer no longer detects or configures them,
+Cursor was retired on 2026-08-26; the installer no longer detects or configures it,
 and `uninstall` still takes back hooks an earlier install wrote.
 All agents share the same vault — a decision recorded by Claude Code is visible to OpenCode in its next session.
 

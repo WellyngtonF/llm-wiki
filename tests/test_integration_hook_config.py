@@ -92,6 +92,15 @@ def _historical_antigravity_resource(hooks, install_control, destination: Path, 
     )
 
 
+def _live_antigravity_resource(hooks, home: Path):
+    """The resource an install writes today (ADR 0010), for the standalone `~/.gemini`."""
+    return hooks.antigravity_hooks_resource(
+        "antigravity-user-hooks",
+        home,
+        hooks.antigravity_hooks_template(ROOT, Path("/opt/uv/bin/uv")),
+    )
+
+
 def _canonical(hooks, value):
     return importlib.import_module("reliable_memory").canonical_json_bytes(value)
 
@@ -287,7 +296,7 @@ def _install_and_retire(tmp_path: Path, historical, retired_id: str, relative: s
         resource.resource_id: resource
         for resource in (
             hooks.retired_cursor_hooks_resource(home),
-            hooks.retired_antigravity_hooks_resource(home),
+            _live_antigravity_resource(hooks, home),
         )
     }[retired_id]
     install_control.uninstall_resources(state_root=state_root, resources=[retired])
@@ -307,7 +316,7 @@ def test_uninstall_takes_back_a_cursor_fragment_written_before_cursor_was_retire
     assert json.loads(destination.read_bytes()) == original
 
 
-def test_uninstall_takes_back_an_antigravity_fragment_written_before_it_was_retired(
+def test_uninstall_takes_back_an_antigravity_fragment_written_before_it_was_retired_and_restored(
     tmp_path: Path,
 ) -> None:
     destination, original = _install_and_retire(
@@ -357,7 +366,7 @@ def test_without_the_removal_path_an_old_fragment_could_never_be_taken_back(
     ):
         install_control.uninstall_resources(
             state_root=state_root,
-            resources=[hooks.retired_antigravity_hooks_resource(home)],
+            resources=[_live_antigravity_resource(hooks, home)],
         )
 
     assert destination.read_bytes() == written
