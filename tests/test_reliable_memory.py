@@ -9,7 +9,7 @@ import subprocess
 import threading
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -768,3 +768,66 @@ def test_reopening_an_operational_database_keeps_existing_locks(tmp_path: Path) 
 
     assert before > 0
     assert after == before
+
+
+def _identity(**overrides: object) -> reliable_memory.RuntimeFileIdentity:
+    values: dict[str, object] = {
+        "platform": "posix",
+        "volume": "dev:16777233",
+        "file_id": "ino:2406628",
+        "size": 355,
+        "mtime_ns": 1_794_311_166_000_000_000,
+    }
+    values.update(overrides)
+    return reliable_memory.RuntimeFileIdentity(**values)  # type: ignore[arg-type]
+
+
+def test_a_posix_file_keeps_its_identity_when_the_kernel_renumbers_its_volume():
+    """ADR 0009: macOS hands an APFS volume a new st_dev at boot."""
+    recorded = _identity()
+    after_reboot = _identity(volume="dev:16777232")
+
+    assert reliable_memory.same_runtime_file(recorded, after_reboot)
+    assert reliable_memory.same_runtime_file(
+        asdict(recorded), after_reboot, contents=False
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"file_id": "ino:2406629"},
+        {"size": 356},
+        {"mtime_ns": 1_794_311_166_000_000_001},
+        {"platform": "windows"},
+    ],
+)
+def test_a_posix_file_is_still_a_different_file_when_anything_else_changes(change):
+    assert not reliable_memory.same_runtime_file(_identity(), _identity(**change))
+
+
+def test_a_file_measured_by_its_file_alone_ignores_its_contents_metadata():
+    recorded = _identity()
+    rewritten = _identity(size=999, mtime_ns=1)
+
+    assert reliable_memory.same_runtime_file(recorded, rewritten, contents=False)
+    assert not reliable_memory.same_runtime_file(recorded, rewritten)
+    assert not reliable_memory.same_runtime_file(
+        recorded, _identity(file_id="ino:1"), contents=False
+    )
+
+
+def test_a_windows_file_on_another_volume_serial_is_another_file():
+    recorded = _identity(platform="windows", volume="volume:1", file_id="file-id:aa")
+
+    assert reliable_memory.same_runtime_file(recorded, recorded)
+    assert not reliable_memory.same_runtime_file(
+        recorded, replace(recorded, volume="volume:2")
+    )
+
+
+def test_a_malformed_recorded_identity_is_never_the_same_file():
+    current = _identity()
+
+    assert not reliable_memory.same_runtime_file(None, current)
+    assert not reliable_memory.same_runtime_file({"file_id": "ino:2406628"}, current)

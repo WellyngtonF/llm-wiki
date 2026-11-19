@@ -959,6 +959,41 @@ def capture_runtime_file_identity(
     )
 
 
+_RUNTIME_IDENTITY_FIELDS = ("platform", "volume", "file_id", "size", "mtime_ns")
+
+
+def _runtime_identity_mapping(identity: object) -> dict[str, object] | None:
+    if isinstance(identity, RuntimeFileIdentity):
+        return {name: getattr(identity, name) for name in _RUNTIME_IDENTITY_FIELDS}
+    if isinstance(identity, dict) and all(
+        name in identity for name in _RUNTIME_IDENTITY_FIELDS
+    ):
+        return {name: identity[name] for name in _RUNTIME_IDENTITY_FIELDS}
+    return None
+
+
+def same_runtime_file(recorded: object, current: object, *, contents: bool = True) -> bool:
+    """Whether a stored runtime file identity names the file measured now (ADR 0009).
+
+    `recorded` may be the JSON form a record keeps. On POSIX the volume is
+    `st_dev`, which the kernel assigns at mount and macOS renumbers at boot, so
+    it is recorded and not compared; the file id, the fixed runtime path and,
+    for an immutable artifact, its digest still name the file. A Windows volume
+    serial belongs to the volume and stays compared. `contents=False` matches a
+    mutable file by the file alone, not by its size and modification time.
+    """
+    stored = _runtime_identity_mapping(recorded)
+    measured = _runtime_identity_mapping(current)
+    if stored is None or measured is None:
+        return False
+    names = ["platform", "file_id"]
+    if measured["platform"] != "posix":
+        names.append("volume")
+    if contents:
+        names.extend(("size", "mtime_ns"))
+    return all(stored[name] == measured[name] for name in names)
+
+
 @contextlib.contextmanager
 def begin_immediate(
     connection: sqlite3.Connection,

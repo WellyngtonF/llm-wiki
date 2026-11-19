@@ -1,0 +1,15 @@
+# A POSIX file is not identified by its device number
+
+A runtime file identity is the platform, the volume, the file id, the size and the modification time. Several records keep one and check it on a later run: the Reliability v3 adoption record names the active databases and the legacy tombstones, the migration record names its source, and an ownership marker names its own file. On POSIX the volume was `dev:<st_dev>`. `st_dev` is not a property of the disk. The kernel assigns it when it mounts the filesystem, and macOS renumbers APFS volumes at boot: on 2026-11-14 a Mac rebooted, the volume holding the vault came back as `16777232` instead of `16777233`, and the adoption record no longer matched a tombstone whose inode, size and modification time had not changed. Every Markdown writer was refused, session capture stopped and the nightly could not take its fence, until someone noticed four days later. Nothing had been touched. So on POSIX the volume is now recorded and not compared: `reliable_memory.same_runtime_file` is the one rule every check of a stored runtime file identity uses. A Markdown transaction records its target's parent directory as a device and an inode, and the same mistake would quarantine a transaction prepared before a reboot as `parent_identity_changed` when it is applied or recovered after it; `markdown_transaction._same_parent_directory` compares the inode alone on POSIX. The file id, size and modification time are still compared, the path is still the fixed runtime path inside the state root, and an immutable artifact's bytes are still checked against their digest. Windows keeps comparing its volume serial number, which the volume carries and the kernel does not reassign.
+
+## Consequences
+
+- A record written before this change validates unchanged. Its stored `dev:` value is kept, so no repair, re-adoption or rewrite of `run/` is needed.
+- A file copied or restored onto another volume gets a new inode and still fails the check. What the device number alone caught was a different filesystem mounted at the same path whose file has the same inode, size and nanosecond modification time, and for an immutable artifact the same digest too. The runtime does not defend against that.
+- A comparison of two identities measured in one process, such as the before/after reads around a publication, is unchanged. The kernel does not renumber a mounted volume under a running process.
+
+## Considered Options
+
+- Record a stable volume id (the APFS volume UUID, the filesystem UUID on Linux): rejected. It needs platform calls the runtime does not make today, a mount table lookup on Linux, and a compatibility path for the records that already hold `dev:` values.
+- Re-adopt the vault after each reboot: rejected. It is an offline operator action that needs every agent stopped, and the next reboot breaks it again.
+- Drop the volume from the identity record: rejected. It changes the record schemas the installed vaults carry; recording it costs nothing and helps an operator read a failure.

@@ -396,6 +396,31 @@ def test_marker_identity_change_blocks_release_and_preserves_owner(
     assert _owner_count(state_root) == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a Windows volume serial is stable")
+def test_a_marker_recorded_before_a_reboot_renumbered_its_volume_is_still_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR 0009: the kernel reassigns st_dev at mount; the marker file is the same."""
+    state_root = tmp_path / "state"
+    registry, _clock = _registry(state_root, monkeypatch)
+    marker = _marker(state_root, "compile")
+    recorded = replace(
+        marker,
+        file_identity=replace(marker.file_identity, volume="dev:0"),
+    )
+    lease = registry.acquire(
+        "compile",
+        scope="global",
+        actor_id="compile-actor",
+        token="compile-token",
+        marker=recorded,
+    )
+
+    registry.release(lease)
+
+    assert _owner_count(state_root) == 0
+
+
 def test_process_identity_dispatch_liveness_and_actor_contracts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

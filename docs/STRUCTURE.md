@@ -355,6 +355,12 @@ adoption, known v2 queue and transaction clients cannot open active v3 state. Do
 reports a protected quiescent snapshot only after complete adoption; before that it
 reports an unconditional legacy-protocol blocker. The snapshot is not a durable deletion permit;
 `run/` deletion remains an offline operator action.
+A runtime file identity stored in one of these records (adoption artifacts, migration
+source, ownership marker) is checked with `reliable_memory.same_runtime_file`. On POSIX
+that compares the file id, size and modification time but not `dev:<st_dev>`, which
+the kernel reassigns at mount (macOS renumbers APFS volumes at boot); a Markdown
+transaction's recorded parent directory is likewise matched by inode alone on POSIX.
+Windows still compares its volume serial (ADR 0009).
 
 Operational migrations execute individual statements under explicit transactions,
 verify their complete invariant on every startup, and remain restartable after any

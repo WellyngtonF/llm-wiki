@@ -31,6 +31,7 @@ from reliable_memory import (
     open_operational_db,
     read_runtime_bytes,
     restricted_relative_path,
+    same_runtime_file,
     sha256_bytes,
 )
 
@@ -488,7 +489,10 @@ def _validated_marker_json(marker: MarkerIdentity) -> bytes:
 def _require_marker_match(
     before: object, after: object, content: bytes, marker: MarkerIdentity
 ) -> None:
-    if before != marker.file_identity or after != marker.file_identity:
+    if not (
+        same_runtime_file(marker.file_identity, before)
+        and same_runtime_file(marker.file_identity, after)
+    ):
         raise OperationalOwnershipError("marker_identity_invalid")
     if sha256_bytes(content) != marker.sha256:
         raise OperationalOwnershipError("marker_identity_invalid")
@@ -1232,7 +1236,7 @@ def _remove_exact_marker(state_root: Path, marker: MarkerIdentity) -> None:
     except FileNotFoundError:
         return
     if (
-        identity != marker.file_identity
+        not same_runtime_file(marker.file_identity, identity)
         or sha256_bytes(payload) != marker.sha256
         or marker.pid != os.getpid()
     ):

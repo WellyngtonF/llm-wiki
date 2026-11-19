@@ -84,6 +84,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A reboot no longer locks a macOS vault** (ADR 0009). macOS renumbers APFS
+  volumes at boot, and runtime file identities stored the volume as `st_dev`: after
+  a reboot on 2026-11-14 the adoption record no longer matched an unchanged
+  tombstone, every Markdown writer was refused, capture stopped and the nightly
+  could not take its fence. On POSIX a stored identity (adoption artifacts,
+  migration source, ownership markers, a transaction's parent directory) is now
+  compared without the device number; Windows still compares its volume serial.
+  Existing records validate unchanged, with no repair.
 - **A long code name no longer blocks the compile.** A note that quoted a
   42-letter camel-case method name scored as a secret, and the publication guard
   refused every nightly compile from 2026-10-09. A camel-case run whose every word
