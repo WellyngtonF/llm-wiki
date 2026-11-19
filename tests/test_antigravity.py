@@ -49,6 +49,22 @@ def test_session_start_takes_the_first_workspace_that_is_a_repository(repositori
     }
 
 
+def test_a_folder_outside_git_is_not_the_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T3's attachments folder is `cwd` and is no repository; the git workspace wins."""
+    project_state = importlib.import_module("session_start_project_state")
+    monkeypatch.setattr(project_state, "working_repository", lambda directory, _projects: directory)
+    attachments = tmp_path / "attachments"
+    repository = tmp_path / "repo"
+    attachments.mkdir()
+    (repository / ".git").mkdir(parents=True)
+    raw = {**_payload("Stop"), "cwd": str(attachments)}
+    raw["workspacePaths"] = [str(attachments), str(repository)]
+
+    assert _hook().worktree(raw) == str(repository)
+
+
 def test_without_a_repository_the_cwd_stands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_hook(), "_is_repository", lambda _name: False)
 

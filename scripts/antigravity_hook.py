@@ -79,13 +79,18 @@ def _workspaces(raw: Mapping[str, Any]) -> list[str]:
 
 
 def _is_repository(directory: str) -> bool:
+    """A git checkout an agent may work in.
+
+    `working_repository` answers the directory itself when no `.git` is above it,
+    so a plain folder such as T3's attachments would pass without the marker check.
+    """
     from session_start_project_state import working_repository
 
     try:
-        working_repository(Path(directory), ROOT / "knowledge" / "projects")
+        checkout = working_repository(Path(directory), ROOT / "knowledge" / "projects")
+        return (checkout / ".git").exists()
     except (OSError, ValueError):
         return False
-    return True
 
 
 def worktree(raw: Mapping[str, Any], preferred: str | None = None) -> str | None:
